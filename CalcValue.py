@@ -220,13 +220,26 @@ def compute_surface_normal(
     normal = eigvecs[:, min_eigval_idx].copy()
 
     # --- 共線性（退化）のチェック ---
-    # 最小固有値が非常に小さい場合は共線と判定
-    min_eigval = eigvals[min_eigval_idx]
-    tolerance = 1e-10
-    if min_eigval < tolerance:
+    # 固有値を昇順にソート
+    sorted_eigvals = np.sort(eigvals)
+    min_eigval = sorted_eigvals[0]
+    second_min_eigval = sorted_eigvals[1]
+    
+    # 最小固有値が非常に小さく、かつ2番目との比が小さい場合は共線と判定
+    min_tolerance = 1e-12
+    ratio_tolerance = 1e-6
+    
+    if min_eigval < min_tolerance:
         raise ValueError(
             "指定された点群が共線状態で、平面を一意に定義できません。"
-            f"最小固有値: {min_eigval:.2e} < 許容値: {tolerance:.2e}"
+            f"最小固有値: {min_eigval:.2e} < 許容値: {min_tolerance:.2e}"
+        )
+    
+    # 固有値の比が小さすぎる場合も共線と判定
+    if second_min_eigval > 0 and min_eigval / second_min_eigval < ratio_tolerance:
+        raise ValueError(
+            "指定された点群が近似的に共線状態で、平面を安定に定義できません。"
+            f"固有値比: {min_eigval / second_min_eigval:.2e} < 許容値: {ratio_tolerance:.2e}"
         )
 
     # --- 6. 参照ベクトルによる符号調整 ---

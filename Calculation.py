@@ -14,7 +14,7 @@
         - compute_barriers(): バリアを計算する
 - calculate_delta_g(): ギブス自由エネルギーの差を計算する
     - 付随する関数
-        - calculate_g(): ギブス自由エネルギーを計算する
+        - calculate_gibbs_free_energy(): ギブス自由エネルギーを計算する
 - optimize_lattice_constant(): 格子定数を最適化する
 """
 
@@ -38,7 +38,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from util import ConditionalLogger, setup_logger
+from util import ConditionalLogger, ensure_logger, optimize_and_get_energy
 
 
 # ----------
@@ -58,7 +58,7 @@ def calculate_adsorption_energy(
     adsorbed_structure_input: CAEInput,
     reactant_structures_input: list[CAEInput],
     *,
-    optimizer: Optimizer = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = FIRELBFGS,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
     logger: Optional[ConditionalLogger] = None,
@@ -79,28 +79,24 @@ def calculate_adsorption_energy(
         adsorbed_structure_input (CAEInput): 吸着後の構造（例: Cu-CO複合体）。
         reactant_structures_input (list[CAEInput]): 吸着前の構造群。
             例: [Cu表面, CO分子] のリスト。各構造は独立に最適化される。
-        optimizer (Optimizer, optional): 構造最適化アルゴリズム。
+        optimizer_cls (type[Optimizer], optional): 構造最適化アルゴリズムのクラス。
             デフォルトは FIRELBFGS。
-        opt_fmax (float, optional): 構造最適化の力の収束閾値（eV/Å）。デフォルトは 0.05。
+        opt_fmax (float, optional): 構造最適化の力の収束閾値[eV/Å]。デフォルトは 0.05。
         opt_maxsteps (int, optional): 構造最適化の最大ステップ数。デフォルトは 3000。
         logger (ConditionalLogger | None, optional): ログ出力制御。
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
 
     Returns:
-        float: 吸着エネルギー（eV）。負の値は吸着が熱力学的に有利であることを示す。
+        float: 吸着エネルギー[eV]。負の値は吸着が熱力学的に有利であることを示す。
 
     Raises:
-        ValueError: calc_mode_reactants の長さが reactant_structures と不一致の場合。
+        ValueError: reactant_structures_input が空の場合。
         TypeError: 引数の型が不正な場合。
     """
 
     # --- ログ設定 ---
-    if logger is None:
-        if enable_logging:
-            logger = setup_logger(prefix="adsorption")
-        else:
-            logger = ConditionalLogger(None, enabled=False)
+    logger = ensure_logger("adsorption", enable_logging, logger)
 
     # --- 引数検証 ---
     n_reactants = len(reactant_structures_input)
@@ -108,69 +104,6 @@ def calculate_adsorption_energy(
         raise ValueError(
             "reactant_structures は少なくとも1つの構造を含む必要があります。"
         )
-
-    # --- 内部ヘルパー関数: 構造最適化とエネルギー計算 ---
-    def _optimize_and_get_energy(calc_input: CAEInput, label: str) -> float:
-        """
-        単一構造の最適化とエネルギー取得。
-
-        Args:
-            calc_input: 計算する構造、振動させる分子のインデックス、計算モード
-            label: ログ用ラベル
-
-        Returns:
-            最適化後のポテンシャルエネルギー (eV)
-        """
-        # 作業用コピーを作成
-        work_atoms = calc_input.structure.copy()
-
-        # 計算機を設定
-        if calc_input.calc_mode == "molecule":
-            work_atoms.calc = calculator_molecule
-        else:  # 'solid'
-            work_atoms.calc = calculator_solid
-
-        logger.info(f"--- {label} 処理開始 ---")
-        logger.info(f"原子数: {len(work_atoms)}")
-        logger.info(f"組成: {work_atoms.symbols}")
-        logger.info(f"計算モード: {calc_input.calc_mode}")
-
-        # 制約情報のログ出力
-        constraints = work_atoms.constraints
-        if constraints:
-            logger.info(f"制約条件: {len(constraints)} 個")
-            for i, constraint in enumerate(constraints):
-                constraint_name = type(constraint).__name__
-                logger.info(f"  制約{i}: {constraint_name}")
-                # 固定原子数の情報（FixAtomsの場合）
-                if hasattr(constraint, "index"):
-                    n_fixed = (
-                        len(constraint.index)
-                        if hasattr(constraint.index, "__len__")
-                        else 1
-                    )
-                    logger.info(f"    固定原子数: {n_fixed}")
-        else:
-            logger.info("制約条件: なし")
-
-        # 初期エネルギー取得
-        e_initial = work_atoms.get_potential_energy()
-        logger.info(f"初期エネルギー: {e_initial:.6f} eV")
-
-        # 構造最適化実行
-        logger.info("構造最適化開始")
-        opt = optimizer(work_atoms)
-        opt.run(fmax=opt_fmax, steps=opt_maxsteps)
-        logger.info("構造最適化完了")
-
-        # 最適化後エネルギー取得
-        e_final = work_atoms.get_potential_energy()
-        e_change = e_final - e_initial
-        logger.info(f"最適化後エネルギー: {e_final:.6f} eV")
-        logger.info(f"エネルギー変化: {e_change:.6f} eV")
-        logger.info(f"--- {label} 処理完了 ---")
-
-        return e_final
 
     # --- メイン計算開始ログ ---
     logger.info("=" * 80)
@@ -183,18 +116,45 @@ def calculate_adsorption_energy(
         logger.info(
             f"  反応物{i+1}: {atoms.structure.symbols} ({len(atoms.structure)} 原子)"
         )
-    logger.info(f"計算モード設定:")
+    logger.info("計算モード設定:")
     logger.info(f"  吸着後: {adsorbed_structure_input.calc_mode}")
-    logger.info(f"  反応物: {reactant_structures_input[0].calc_mode}")
+    for i, reactant in enumerate(reactant_structures_input):
+        logger.info(f"  反応物{i+1}: {reactant.calc_mode}")
 
     # --- 1. 吸着後構造のエネルギー計算 ---
-    e_adsorbed = _optimize_and_get_energy(adsorbed_structure_input, "吸着後構造")
+    adsorbed_calc = (
+        calculator_molecule
+        if adsorbed_structure_input.calc_mode == "molecule"
+        else calculator_solid
+    )
+    e_adsorbed = optimize_and_get_energy(
+        atoms=adsorbed_structure_input.structure,
+        calculator=adsorbed_calc,
+        optimizer_cls=optimizer_cls,
+        fmax=opt_fmax,
+        maxsteps=opt_maxsteps,
+        label="吸着後構造",
+        logger=logger,
+    )
 
     # --- 2. 各反応物構造のエネルギー計算 ---
     reactant_energies: list[float] = []
     for i, reactant_input in enumerate(reactant_structures_input):
         label = f"反応物{i+1}"
-        e_reactant = _optimize_and_get_energy(reactant_input, label)
+        reactant_calc = (
+            calculator_molecule
+            if reactant_input.calc_mode == "molecule"
+            else calculator_solid
+        )
+        e_reactant = optimize_and_get_energy(
+            atoms=reactant_input.structure,
+            calculator=reactant_calc,
+            optimizer_cls=optimizer_cls,
+            fmax=opt_fmax,
+            maxsteps=opt_maxsteps,
+            label=label,
+            logger=logger,
+        )
         reactant_energies.append(e_reactant)
 
     # --- 3. 吸着エネルギー計算 ---
@@ -218,11 +178,8 @@ def calculate_adsorption_energy(
         logger.info("→ 吸着は熱力学的に不利")
     logger.info("=" * 80)
 
-    # コンソール出力用サマリー
-    print(f"\n{'='*50}")
-    print(f"吸着エネルギー計算完了")
-    print(f"E_ads = {e_adsorption:.3f} eV")
-    print(f"{'='*50}\n")
+    # サマリーをロガーに出力
+    logger.info(f"吸着エネルギー計算完了: E_ads = {e_adsorption:.3f} eV")
 
     return e_adsorption
 
@@ -284,13 +241,13 @@ def generate_reference_structure(
         crystal_structure (str, optional): 結晶構造の指定。
             'auto': 自動判別（デフォルト）
             'fcc', 'bcc', 'hcp': 手動指定
-        lattice_parameter (float | None, optional): 格子定数（Å）。
+        lattice_parameter (float | None, optional): 格子定数[Å]。
             Noneの場合は ASE の標準値を使用。
         logger (ConditionalLogger | None, optional): ロガー。
             Noneの場合はログ出力しない。
 
     Returns:
-        Atoms: 純元素の参照構造（単原子）。
+        Atoms: 純元素の参照構造。結晶構造に応じて1つまたは複数の原子を含む。
 
     Raises:
         ValueError: 対応していない元素または結晶構造の場合。
@@ -300,13 +257,12 @@ def generate_reference_structure(
         - fcc: Cu, Au, Ag, Al, Ni, Pt, Pd など
         - bcc: Fe, Cr, W, Mo, V など
         - hcp: Zn, Mg, Ti, Zr など
+
+        生成される構造の原子数は結晶構造とASEのbulk()実装に依存します。
+        生成エネルギー計算では自動的に原子あたりのエネルギーに正規化されます。
     """
     # --- ログ設定 ---
-    if logger is None:
-        if enable_logging:
-            logger = setup_logger(prefix="reference")
-        else:
-            logger = ConditionalLogger(None, enabled=False)
+    logger = ensure_logger("reference", enable_logging, logger)
 
     # --- 元素記号の正規化 ---
     element = element.capitalize()
@@ -395,7 +351,7 @@ def calculate_formation_energy(
     calculator: Calculator,
     compound_structure: Atoms,
     *,
-    optimizer: type[Optimizer] = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = FIRELBFGS,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
     reference_crystal_structures: Optional[dict[str, str]] = None,
@@ -413,22 +369,22 @@ def calculate_formation_energy(
         calculator (Calculator): 固体用計算機。
             一般的に EstimatorCalcMode.CRYSTAL_U0 を使用。
         compound_structure (Atoms): 化合物の原子構造。
-        optimizer (type[Optimizer], optional): 構造最適化アルゴリズム。
+        optimizer_cls (type[Optimizer], optional): 構造最適化アルゴリズムのクラス。
             デフォルトは FIRELBFGS。
-        opt_fmax (float, optional): 構造最適化の力の収束閾値（eV/Å）。デフォルトは 0.05。
+        opt_fmax (float, optional): 構造最適化の力の収束閾値[eV/Å]。デフォルトは 0.05。
         opt_maxsteps (int, optional): 構造最適化の最大ステップ数。デフォルトは 3000。
         reference_crystal_structures (dict[str, str] | None, optional):
             純元素の結晶構造を手動指定する辞書。キーは元素記号、値は 'fcc', 'bcc', 'hcp'。
             例: {'Cu': 'fcc', 'Fe': 'bcc'}
         reference_lattice_parameters (dict[str, float] | None, optional):
-            純元素の格子定数を手動指定する辞書。キーは元素記号、値は格子定数（Å）。
+            純元素の格子定数を手動指定する辞書。キーは元素記号、値は格子定数[Å]。
             例: {'Cu': 3.615, 'Au': 4.078}
         logger (ConditionalLogger | None, optional): ログ出力制御。
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
 
     Returns:
-        float: 生成エネルギー（eV）。負の値は化合物形成が熱力学的に有利であることを示す。
+        float: 生成エネルギー[eV]。負の値は化合物形成が熱力学的に有利であることを示す。
 
     Raises:
         ValueError: 化合物構造が空、または未対応の元素が含まれる場合。
@@ -448,56 +404,11 @@ def calculate_formation_energy(
         >>> print(f"Cu3Au生成エネルギー: {formation_energy:.3f} eV")
     """
     # --- ログ設定 ---
-    if logger is None:
-        if enable_logging:
-            logger = setup_logger(prefix="formation")
-        else:
-            logger = ConditionalLogger(None, enabled=False)
+    logger = ensure_logger("formation", enable_logging, logger)
 
     # --- 引数検証 ---
     if len(compound_structure) == 0:
         raise ValueError("化合物構造が空です。")
-
-    # --- 内部ヘルパー関数: 構造最適化とエネルギー計算 ---
-    def _optimize_and_get_energy(atoms: Atoms, label: str) -> float:
-        """
-        単一構造の最適化とエネルギー取得。
-
-        Args:
-            atoms: 計算する原子構造
-            label: ログ用ラベル
-
-        Returns:
-            最適化後のポテンシャルエネルギー (eV)
-        """
-        # 作業用コピーを作成
-        work_atoms = atoms.copy()
-
-        # 計算機を設定
-        work_atoms.calc = calculator
-
-        logger.info(f"--- {label} 処理開始 ---")
-        logger.info(f"原子数: {len(work_atoms)}")
-        logger.info(f"組成: {work_atoms.symbols}")
-
-        # 初期エネルギー取得
-        e_initial = work_atoms.get_potential_energy()
-        logger.info(f"初期エネルギー: {e_initial:.6f} eV")
-
-        # 構造最適化実行
-        logger.info("構造最適化開始")
-        opt = optimizer(work_atoms)
-        opt.run(fmax=opt_fmax, steps=opt_maxsteps)
-        logger.info("構造最適化完了")
-
-        # 最適化後エネルギー取得
-        e_final = work_atoms.get_potential_energy()
-        e_change = e_final - e_initial
-        logger.info(f"最適化後エネルギー: {e_final:.6f} eV")
-        logger.info(f"エネルギー変化: {e_change:.6f} eV")
-        logger.info(f"--- {label} 処理完了 ---")
-
-        return e_final
 
     # --- メイン計算開始 ---
     logger.info("=" * 80)
@@ -513,7 +424,15 @@ def calculate_formation_energy(
         logger.info(f"  {element}: {count} 原子")
 
     # --- 2. 化合物のエネルギー計算 ---
-    e_compound = _optimize_and_get_energy(compound_structure, "化合物構造")
+    e_compound = optimize_and_get_energy(
+        atoms=compound_structure,
+        calculator=calculator,
+        optimizer_cls=optimizer_cls,
+        fmax=opt_fmax,
+        maxsteps=opt_maxsteps,
+        label="化合物構造",
+        logger=logger,
+    )
 
     # --- 3. 各純元素のエネルギー計算 ---
     element_energies: dict[str, float] = {}
@@ -544,9 +463,23 @@ def calculate_formation_energy(
             )
 
             # エネルギー計算実行
-            e_element = _optimize_and_get_energy(ref_structure, f"純元素 {element}")
+            e_element_total = optimize_and_get_energy(
+                atoms=ref_structure,
+                calculator=calculator,
+                optimizer_cls=optimizer_cls,
+                fmax=opt_fmax,
+                maxsteps=opt_maxsteps,
+                label=f"純元素 {element}",
+                logger=logger,
+            )
 
-            element_energies[element] = e_element
+            # 原子あたりのエネルギーに正規化
+            e_element_per_atom = e_element_total / len(ref_structure)
+            logger.info(
+                f"純元素 {element} の原子あたりエネルギー: {e_element_per_atom:.6f} eV/atom (構造中 {len(ref_structure)} 原子)"
+            )
+
+            element_energies[element] = e_element_per_atom
 
         except Exception as e:
             logger.error(f"純元素 {element} の計算に失敗: {e}")
@@ -567,11 +500,13 @@ def calculate_formation_energy(
     logger.info("=" * 80)
     logger.info("生成エネルギー計算結果")
     logger.info(f"化合物エネルギー: {e_compound:.6f} eV")
-    logger.info("純元素エネルギー:")
-    for element, energy in element_energies.items():
+    logger.info("純元素エネルギー (原子あたり):")
+    for element, energy_per_atom in element_energies.items():
         count = composition[element]
-        total = count * energy
-        logger.info(f"  {element}: {energy:.6f} eV × {count} = {total:.6f} eV")
+        total = count * energy_per_atom
+        logger.info(
+            f"  {element}: {energy_per_atom:.6f} eV/atom × {count} = {total:.6f} eV"
+        )
     logger.info(f"純元素合計エネルギー: {e_elements_total:.6f} eV")
     logger.info(f"生成エネルギー: {e_formation:.6f} eV")
     if e_formation < 0:
@@ -580,12 +515,10 @@ def calculate_formation_energy(
         logger.info("→ 化合物形成は熱力学的に不利")
     logger.info("=" * 80)
 
-    # コンソール出力用サマリー
-    print(f"\n{'='*50}")
-    print(f"生成エネルギー計算完了")
-    print(f"組成: {composition}")
-    print(f"E_formation = {e_formation:.3f} eV")
-    print(f"{'='*50}\n")
+    # ロガーサマリー出力
+    logger.info(
+        f"生成エネルギー計算完了: 組成 {composition}, E_formation = {e_formation:.3f} eV"
+    )
 
     return e_formation
 
@@ -699,7 +632,7 @@ def run_neb(
     optimizer.run(fmax=fmax, steps=steps)
 
     # エネルギーの計算
-    energies = [image.get_total_energy() for image in images]
+    energies = [image.get_potential_energy() for image in images]
 
     return images, energies
 
@@ -833,18 +766,19 @@ class CGFEInput:
 
 
 # ギブス自由エネルギーを計算する
-def calculate_g(
+def calculate_gibbs_free_energy(
     calculator_molecule: Calculator,
     calculator_solid: Calculator,
     calc_input: CGFEInput,
     *,
     temperature: float = 298.15,
     pressure: float = 101325.0,
-    optimizer: Optimizer = None,
+    optimizer_cls: type[Optimizer] = FIRELBFGS,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
-    logger: Optional["ConditionalLogger"] = None,
+    logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
+    cleanup_vibrations: bool = True,
 ):
     """
     ギブス自由エネルギーを計算する。
@@ -853,23 +787,19 @@ def calculate_g(
         calculator_molecule (ase.calculators.calculator.Calculator): 分子用計算機
         calculator_solid (ase.calculators.calculator.Calculator): 固体用計算機
         calc_input (CGFEInput): 計算する構造、振動させる分子のインデックス、計算モード
-        temperature (float): 温度（K）
-        pressure (float): 圧力（Pa）
-        optimizer (ase.optimize.optimize.Optimizer): 最適化エンジン
+        temperature (float): 温度[K]
+        pressure (float): 圧力[Pa]
+        optimizer_cls (type[Optimizer]): 最適化エンジンのクラス
         opt_fmax (float): 最適化の閾値
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
+        cleanup_vibrations (bool): 振動計算後にファイルをクリーンアップするか
 
     Returns:
         float: ギブス自由エネルギー。Δではない。
     """
-    # ロガーがNoneの場合は無効なロガーを作成
     # --- ログ設定 ---
-    if logger is None:
-        if enable_logging:
-            logger = setup_logger(prefix="gibbs")
-        else:
-            logger = ConditionalLogger(None, enabled=False)
+    logger = ensure_logger("gibbs", enable_logging, logger)
 
     # ---構造に計算機を設定
     atoms = calc_input.structure
@@ -901,21 +831,21 @@ def calculate_g(
         logger.info("拘束条件: なし")
 
     # ---　1. 最適化
-    e_initial = atoms.get_potential_energy()
-    logger.info(f"初期ポテンシャルエネルギー: {e_initial:.6f} eV")
-
     if calc_input.do_opt:
-        if optimizer is None:
-            optimizer = FIRELBFGS
-
-        logger.info("構造最適化開始")
-        opt_dyn = optimizer(atoms)
-        opt_dyn.run(fmax=opt_fmax, steps=opt_maxsteps)
-        logger.info("構造最適化完了")
-
-    e_opt = atoms.get_potential_energy()
-    logger.info(f"最適化後ポテンシャルエネルギー: {e_opt:.6f} eV")
-    logger.info(f"最適化によるエネルギー変化: {e_opt - e_initial:.6f} eV")
+        e_opt = optimize_and_get_energy(
+            atoms=atoms,
+            calculator=atoms.calc,  # atomsに設定済みの計算機を使用
+            optimizer_cls=optimizer_cls,
+            fmax=opt_fmax,
+            maxsteps=opt_maxsteps,
+            label=f"構造最適化: {atoms.symbols}",
+            logger=logger,
+            copy_atoms=False,  # 元のatomsを直接変更
+        )
+    else:
+        logger.info("構造最適化はスキップされました (do_opt=False)。")
+        e_opt = atoms.get_potential_energy()
+        logger.info(f"ポテンシャルエネルギー: {e_opt:.6f} eV")
 
     # ---　2. 振動計算
     vib_indices = calc_input.vibrate_indices
@@ -939,6 +869,12 @@ def calculate_g(
         vib.run()
         logger.info("振動計算完了")
         vib_energies = vib.get_energies()
+
+        # 振動計算後のクリーンアップ
+        if cleanup_vibrations:
+            logger.info("振動計算ファイルのクリーンアップ実行")
+            vib.clean()
+            logger.info("クリーンアップ完了")
 
     # 振動解析の詳細ログ
     logger.info(f"振動エネルギー数: {len(vib_energies)}")
@@ -1025,7 +961,8 @@ def calculate_g(
     logger.info(f"  内訳: E_pot({e_opt:.6f}) + 熱補正({thermal_correction:.6f})")
     logger.info("=" * 60)
 
-    print(f"==========\ng_{atoms.symbols} = {g:.3f} eV\n==========")
+    # サマリーをロガーに出力
+    logger.info(f"ギブス自由エネルギー計算完了: G({atoms.symbols}) = {g:.3f} eV")
     return g
 
 
@@ -1040,11 +977,12 @@ def calculate_delta_g(
     pressure: float = 101325.0,
     electrode_potential: float = 0.0,
     pH: float = 7.0,
-    optimizer: Optimizer = None,
+    optimizer_cls: type[Optimizer] = FIRELBFGS,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
-    logger: Optional["ConditionalLogger"] = None,
+    logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
+    cleanup_vibrations: bool = True,
 ):
     """
     ギブス自由エネルギーを計算する。CHEモデルに対応している
@@ -1054,24 +992,21 @@ def calculate_delta_g(
         calculator_solid (ase.calculators.calculator.Calculator): 固体用計算機
         reactants (list[CGFEInput|Literal["CHE"]]): 反応物。"CHE"を指定すると、CHEモデルによるギブス自由エネルギーを計算する。
         products (list[CGFEInput|Literal["CHE"]]): 生成物。"CHE"を指定すると、CHEモデルによるギブス自由エネルギーを計算する。
-        temperature (float): 温度（K）
-        pressure (float): 圧力（Pa）
+        temperature (float): 温度[K]
+        pressure (float): 圧力[Pa]
         electrode_potential (float): 電極電位（V vs SHE）
         pH (float): pH
-        optimizer (ase.optimize.optimize.Optimizer): 最適化エンジン
+        optimizer_cls (type[Optimizer]): 最適化エンジンのクラス
         opt_fmax (float): 最適化の閾値
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
+        cleanup_vibrations (bool): 振動計算後にファイルをクリーンアップするか
 
     Returns:
         float: 反応物と生成物のギブス自由エネルギーの差(ΔG)
     """
-    # ロガーがNoneの場合は無効なロガーを作成
-    if logger is None:
-        if enable_logging:
-            logger = setup_logger(prefix="gibbs")
-        else:
-            logger = ConditionalLogger(None, enabled=False)
+    # --- ログ設定 ---
+    logger = ensure_logger("delta_g", enable_logging, logger)
 
     # ---(H+ + e-)のギブス自由エネルギーを計算する(CHEモデルで)
     # CHEの使用有無をチェック
@@ -1091,7 +1026,7 @@ def calculate_delta_g(
 
         # CHEモデルの式: g_(H+ + e-) = 0.5 * g_(H2) - e * U + k_B * T * log(10) * pH
         logger.info("H2分子の自由エネルギー計算")
-        g_h2 = calculate_g(
+        g_h2 = calculate_gibbs_free_energy(
             calculator_molecule,  # 気相分子向けの計算機
             calculator_solid,  # 固体表面向けの計算機
             CGFEInput(
@@ -1104,18 +1039,19 @@ def calculate_delta_g(
             ),
             temperature=temperature,
             pressure=pressure,
-            optimizer=optimizer,
+            optimizer_cls=optimizer_cls,
             opt_fmax=opt_fmax,
             opt_maxsteps=opt_maxsteps,
             logger=logger,
+            cleanup_vibrations=cleanup_vibrations,
         )
 
         # CHEモデル計算の各項
-        e = 1.0  # 素電荷（eV/V）
-        kB = 8.617e-5  # ボルツマン定数（eV/K）
+        e_charge = 1.0  # 素電荷（eV/V）
+        kB = 8.617333262e-5  # ボルツマン定数（eV/K）
 
         term1 = 0.5 * g_h2
-        term2 = -e * electrode_potential
+        term2 = -e_charge * electrode_potential
         term3 = kB * temperature * np.log(10) * pH
 
         g_che = term1 + term2 + term3
@@ -1123,7 +1059,7 @@ def calculate_delta_g(
         logger.info("CHEモデル計算詳細:")
         logger.info(f"  G(H2): {g_h2:.6f} eV")
         logger.info(f"  0.5 * G(H2): {term1:.6f} eV")
-        logger.info(f"  -e * U: {term2:.6f} eV")
+        logger.info(f"  -e_charge * U: {term2:.6f} eV")
         logger.info(f"  kBT * ln(10) * pH: {term3:.6f} eV")
         logger.info(f"  G(H+ + e-): {g_che:.6f} eV")
     else:
@@ -1138,16 +1074,17 @@ def calculate_delta_g(
             reactants_gs.append(g_che)
         else:
             logger.info(f"反応物{i+1}: {reactant.structure.symbols}")
-            g = calculate_g(
+            g = calculate_gibbs_free_energy(
                 calculator_molecule,  # 気相分子向けの計算機
                 calculator_solid,  # 固体表面向けの計算機
                 reactant,
                 temperature=temperature,
                 pressure=pressure,
-                optimizer=optimizer,
+                optimizer_cls=optimizer_cls,
                 opt_fmax=opt_fmax,
                 opt_maxsteps=opt_maxsteps,
                 logger=logger,
+                cleanup_vibrations=cleanup_vibrations,
             )
             reactants_gs.append(g)
 
@@ -1160,16 +1097,17 @@ def calculate_delta_g(
             products_gs.append(g_che)
         else:
             logger.info(f"生成物{i+1}: {product.structure.symbols}")
-            g = calculate_g(
+            g = calculate_gibbs_free_energy(
                 calculator_molecule,  # 気相分子向けの計算機
                 calculator_solid,  # 固体表面向けの計算機
                 product,
                 temperature=temperature,
                 pressure=pressure,
-                optimizer=optimizer,
+                optimizer_cls=optimizer_cls,
                 opt_fmax=opt_fmax,
                 opt_maxsteps=opt_maxsteps,
                 logger=logger,
+                cleanup_vibrations=cleanup_vibrations,
             )
             products_gs.append(g)
 
@@ -1256,9 +1194,9 @@ class LatticeConstant:
 def optimize_lattice_constant(
     atoms: Atoms,
     calculator: Calculator | None = None,
-    optimizer: Optimizer = FIRELBFGS,
-    fmax: float = 0.01,
-    steps: int | None = None,
+    optimizer_cls: type[Optimizer] = FIRELBFGS,
+    opt_fmax: float = 0.01,
+    opt_maxsteps: int | None = None,
 ) -> LatticeConstant:
     """格子定数を最適化してLatticeConstantオブジェクトを返す
 
@@ -1268,9 +1206,9 @@ def optimize_lattice_constant(
     Args:
         atoms (Atoms): 最適化する原子構造
         calculator (Calculator | None): 使用する計算機。Noneの場合は既存の計算機を使用
-        optimizer (Optimizer): 使用する最適化アルゴリズムクラス（デフォルト: FIRELBFGS）
-        fmax (float): 収束条件（原子にかかる力の最大値） [eV/Å]
-        steps (int | None): 最大ステップ数。Noneの場合は制限なし
+        optimizer_cls (type[Optimizer]): 使用する最適化アルゴリズムクラス（デフォルト: FIRELBFGS）
+        opt_fmax (float): 収束条件（原子にかかる力の最大値） [eV/Å]
+        opt_maxsteps (int | None): 最大ステップ数。Noneの場合は制限なし
 
     Returns:
         LatticeConstant: 最適化後の格子定数
@@ -1303,13 +1241,13 @@ def optimize_lattice_constant(
     unit_cell_filter = UnitCellFilter(atoms_copy)
 
     # --- 最適化アルゴリズムの設定と実行 ---
-    optimizer = optimizer(unit_cell_filter)
+    opt_dyn = optimizer_cls(unit_cell_filter)
 
     # ステップ数の制限がある場合は設定
-    if steps is not None:
-        optimizer.run(fmax=fmax, steps=steps)
+    if opt_maxsteps is not None:
+        opt_dyn.run(fmax=opt_fmax, steps=opt_maxsteps)
     else:
-        optimizer.run(fmax=fmax)
+        opt_dyn.run(fmax=opt_fmax)
 
     # --- 最適化後の格子定数を取得 ---
     # get_cell_lengths_and_angles() は (a, b, c, alpha, beta, gamma) のタプルを返す

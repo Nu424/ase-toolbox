@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 from FindAtoms import separate_layers
 from CalcValue import compute_surface_normal
 from FindAtoms import get_neighbors_with_coordination_condition
+from util import ConditionalLogger, ensure_logger, resolve_target_indices
 
 
 # 手動で微妙に動かす
@@ -45,7 +46,7 @@ def move_atoms(
         direction (tuple[float, float, float] | Sequence[float] | NDArray[np.floating]): 移動方向を示すベクトル。
             tuple[float, float, float]、Sequence[float]、またはnumpy配列を指定可能。
             自動的に正規化されます。
-        distance (float): 移動させる距離（Å）。正の値で指定方向、負の値で逆方向。
+        distance (float): 移動させる距離 [Å]。正の値で指定方向、負の値で逆方向。
         inplace (bool, optional): Trueの場合、base_structureを直接変更。
             Falseの場合、コピーを作成して返します。デフォルトはFalse。
 
@@ -88,65 +89,7 @@ def move_atoms(
         structure = base_structure.copy()
 
     # --- target から移動対象原子のインデックスリストを取得 ---
-    target_indices: list[int] = []
-
-    # --- int: 単一原子インデックス ---
-    if isinstance(target, int):
-        if not (0 <= target < len(base_structure)):
-            raise IndexError(
-                f"インデックス{target}は範囲外です（0-{len(base_structure)-1}）。"
-            )
-        target_indices = [target]
-
-    # --- Atom: 単一原子オブジェクト ---
-    elif isinstance(target, Atom):
-        try:
-            index = target.index
-            if not (0 <= index < len(base_structure)):
-                raise IndexError(
-                    f"インデックス{index}は範囲外です（0-{len(base_structure)-1}）。"
-                )
-            target_indices = [index]
-        except (AttributeError, ValueError):
-            raise ValueError("指定されたAtomはbase_structure内に存在しません。")
-
-    # --- Atoms: 構造全体 ---
-    elif isinstance(target, Atoms):
-        target_indices = list(range(len(base_structure)))
-
-    # --- list: 複数指定 ---
-    elif isinstance(target, list):
-        if not target:  # 空リスト
-            target_indices = []
-        elif all(isinstance(item, int) for item in target):
-            # list[int]の場合
-            for idx in target:
-                if not (0 <= idx < len(base_structure)):
-                    raise IndexError(
-                        f"インデックス{idx}は範囲外です（0-{len(base_structure)-1}）。"
-                    )
-            target_indices = list(target)
-        elif all(isinstance(item, Atom) for item in target):
-            # list[Atom]の場合
-            for atom in target:
-                try:
-                    index = atom.index
-                    if not (0 <= index < len(base_structure)):
-                        raise IndexError(
-                            f"インデックス{index}は範囲外です（0-{len(base_structure)-1}）。"
-                        )
-                    target_indices.append(index)
-                except (AttributeError, ValueError):
-                    raise ValueError("指定されたAtomはbase_structure内に存在しません。")
-        else:
-            raise TypeError(
-                "リストの要素は全てintまたは全てAtomsである必要があります。"
-            )
-
-    else:
-        raise TypeError(
-            "targetはint、Atom、Atoms、list[int]、またはlist[Atom]を指定してください。"
-        )
+    target_indices = resolve_target_indices(base_structure, target)
 
     # --- 原子の移動を実行 ---
     for idx in target_indices:
@@ -157,7 +100,13 @@ def move_atoms(
 
 # (平面用)層を固定する
 def fix_layers(
-    atoms: Atoms, fixed_layers: int, *, inplace: bool = False, decimals: int = 4
+    atoms: Atoms,
+    fixed_layers: int,
+    *,
+    inplace: bool = False,
+    decimals: int = 4,
+    logger: Optional[ConditionalLogger] = None,
+    enable_logging: bool = True,
 ) -> Atoms:
     """
     指定された数の下層を固定する制約を追加する。
@@ -173,6 +122,9 @@ def fix_layers(
             False の場合はコピーを作成して返します。デフォルトはFalse。
         decimals (int, optional): z座標の丸め精度（小数点以下の桁数）。
             デフォルトは4。層の判定精度に影響します。
+        logger (Optional[ConditionalLogger], optional): ログ出力制御。
+            Noneの場合は新規作成。
+        enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
 
     Returns:
         ase.Atoms: 制約が適用された原子構造。
@@ -181,6 +133,9 @@ def fix_layers(
     Raises:
         ValueError: fixed_layers が負の値の場合。
     """
+    # --- ログ設定 ---
+    logger = ensure_logger("fix_layers", enable_logging, logger)
+
     # --- 引数の検証 ---
     if fixed_layers < 0:
         raise ValueError("fixed_layers は0以上の値を指定してください。")
@@ -207,8 +162,10 @@ def fix_layers(
 
     # --- 固定層数が総層数以上の場合の警告 ---
     if fixed_layers >= total_layers:
-        print(f"警告: 固定層数 ({fixed_layers}) が総層数 ({total_layers}) 以上です。")
-        print("全ての原子が固定されます。")
+        logger.warning(
+            f"固定層数 ({fixed_layers}) が総層数 ({total_layers}) 以上です。"
+        )
+        logger.warning("全ての原子が固定されます。")
         fixed_layers = total_layers
 
     # --- 固定対象原子のインデックスを収集 ---
@@ -229,11 +186,11 @@ def fix_layers(
         fixed_z_coords = result_atoms.positions[fixed_indices, 2]
         max_fixed_z = np.max(np.round(fixed_z_coords, decimals=decimals))
 
-        print(
+        logger.info(
             f"Z≤{max_fixed_z:.{decimals}f} Å の原子 {len(fixed_indices)} 個を固定しました。"
         )
     else:
-        print("固定対象の原子が見つかりませんでした。")
+        logger.info("固定対象の原子が見つかりませんでした。")
 
     return result_atoms
 
@@ -276,63 +233,7 @@ def substitute_elements(
     # ----------
     # --- 置換対象インデックスの決定
     # ----------
-    # --- target の型に応じてインデックスを取得 ---
-    atom_indices: list[int] = []
-
-    if isinstance(target, int):
-        index = target
-        # 範囲チェック
-        if not (0 <= index < len(atoms)):
-            raise ValueError(f"インデックスが範囲外です: {index}")
-        atom_indices = [index]
-
-    elif isinstance(target, list):
-        # リストの場合、要素の型をチェック
-        if not target:  # 空リストの場合
-            atom_indices = []
-        elif all(isinstance(item, int) for item in target):
-            # list[int]の場合
-            for index in target:
-                if not (0 <= index < len(atoms)):
-                    raise ValueError(f"インデックスが範囲外です: {index}")
-            atom_indices = list(target)
-        elif all(isinstance(item, Atom) for item in target):
-            # list[Atom]の場合
-            atom_indices = []
-            for atom in target:
-                try:
-                    index = atom.index
-                    if not (0 <= index < len(atoms)):
-                        raise ValueError(f"インデックスが範囲外です: {index}")
-                    atom_indices.append(index)
-                except (AttributeError, ValueError):
-                    raise ValueError(
-                        "指定されたAtomがatoms内に存在しないか、不正です。"
-                    )
-        else:
-            raise TypeError(
-                "リストの要素は全てintまたは全てase.Atomである必要があります。"
-            )
-
-    elif isinstance(target, Atom):
-        try:
-            # Atomオブジェクトがatoms内に存在する場合、そのインデックスを取得
-            index = target.index
-        except (AttributeError, ValueError):
-            raise ValueError("指定されたAtomはatoms内に存在しません。")
-        # 念のため範囲チェック
-        if not (0 <= index < len(atoms)):
-            raise ValueError(f"インデックスが範囲外です: {index}")
-        atom_indices = [index]
-
-    elif isinstance(target, Atoms):
-        # Atomsが与えられた場合は「全原子」を対象とする
-        atom_indices = list(range(len(atoms)))
-
-    else:
-        raise TypeError(
-            "target は int、list[int]、ase.Atom、list[ase.Atom]、または ase.Atoms を指定してください。"
-        )
+    atom_indices = resolve_target_indices(atoms, target)
 
     n_targets = len(atom_indices)
     if n_targets == 0:
@@ -423,7 +324,7 @@ def place_adsorbate_along_normal(
         adsorbate (ase.Atoms): 配置する吸着分子。
         target_atom (int | ase.Atom): 基準となる基板上の原子。
             インデックスまたはAtomオブジェクトを指定可能。
-        distance (float): 法線方向に離す距離（Å）。正の値を指定。
+        distance (float): 法線方向に離す距離 [Å]。正の値を指定。
         upper_tolerance (int): 最小配位数から上方向への許容範囲。デフォルトは1。
         lower_tolerance (int): 最小配位数から下方向への許容範囲。デフォルトは1。
 
@@ -479,8 +380,8 @@ def place_adsorbate_along_normal(
             f"必要: 3点以上、取得: {len(point_indices)}点"
         )
 
-    points = np.array([substrate[i].position for i in point_indices])
-    centroid = np.mean(points, axis=0)
+    # points = np.array([substrate[i].position for i in point_indices])
+    # centroid = np.mean(points, axis=0)  # 現在未使用だが将来の拡張用
 
     # --- 参照ベクトルの計算（重心→target_atom方向） ---
     target_pos = substrate[target_index].position
