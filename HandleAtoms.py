@@ -6,6 +6,7 @@ ASEのAtomsオブジェクトを操作・処理するための関数をまとめ
 - move_atoms(): 原子を指定方向に指定距離だけ移動する
 - fix_layers(): (平面用)層を固定する
 - substitute_elements(): 原子を置き換える
+- compute_surface_normal(): (クラスター用)法線ベクトルを計算する
 - place_adsorbate_along_normal(): (クラスター用)クラスターにくっつける
 """
 
@@ -14,9 +15,11 @@ from ase import Atoms, Atom
 from ase.constraints import FixAtoms
 import numpy as np
 from numpy.typing import NDArray
-from FindAtoms import separate_layers
-from CalcValue import compute_surface_normal
-from FindAtoms import get_neighbors_with_coordination_condition
+from FindAtoms import (
+    separate_layers,
+    get_neighbors_with_coordination_condition,
+    get_neighbors,
+)
 from util import ConditionalLogger, ensure_logger, resolve_target_indices
 
 
@@ -300,6 +303,154 @@ def substitute_elements(
         out[idx].symbol = sym
 
     return out
+
+
+# 法線ベクトルを計算する
+def compute_surface_normal(
+    atoms: Atoms,
+    target_atom: int | Atom,
+    *,
+    include_target: bool = True,
+    reference_vector: NDArray[np.float64] | None = None,
+    normalize: bool = True,
+    return_plane: bool = False,
+) -> NDArray[np.float64] | tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    """
+    指定した原子周辺の局所平面を主成分分析（PCA）で近似し、その法線ベクトルを計算する。
+
+    指定した原子とその隣接原子の座標を用いてPCAを実行し、最小固有値に対応する
+    固有ベクトルを表面の法線ベクトルとして算出する。
+
+    Args:
+        atoms (ase.Atoms): 原子構造を保持するASEのAtomsオブジェクト。
+        target_atom (int | ase.Atom): 対象原子。インデックスまたはAtomオブジェクトを指定可能。
+        include_target (bool, optional): PCA計算時に対象原子自身を含めるかどうか。
+            デフォルトはTrue。
+        reference_vector (NDArray[np.float64] | None, optional): 法線ベクトルの符号を
+            決定するための参照ベクトル。Noneの場合は符号調整を行わない。
+            デフォルトはNone。
+        normalize (bool, optional): 法線ベクトルをユニットベクトルに正規化するか。
+            デフォルトはTrue。
+        return_plane (bool, optional): 平面情報（法線、重心、d係数）も返すか。
+            Falseの場合は法線ベクトルのみ、Trueの場合は(normal, centroid, d)の
+            タプルを返す。デフォルトはFalse。
+
+    Returns:
+        NDArray[np.float64] | tuple[NDArray[np.float64], NDArray[np.float64], float]:
+            return_plane=Falseの場合: 法線ベクトル（形状: (3,)）
+            return_plane=Trueの場合: (法線ベクトル, 重心, d係数)のタプル
+
+            平面の方程式: normal · (r - centroid) = 0 または normal · r + d = 0
+
+    Raises:
+        TypeError: target_atomの型がintでもase.Atomでもない場合。
+        ValueError: 指定されたAtomがatoms内に存在しない場合、または
+                   平面を定義するのに十分な点数がない場合（3点未満）、または
+                   点が共線で平面が定義できない場合。
+        IndexError: 指定されたインデックスが範囲外の場合。
+
+    Note:
+        この関数は事前に定義されたget_neighbors関数を使用して隣接原子を取得する。
+        PCAにより平面に最もよくフィットする法線ベクトルを求めるため、
+        ノイズがある場合でも安定した結果が得られる。
+    """
+    # --- target_atom の型に応じてインデックスを取得 ---
+    if isinstance(target_atom, int):
+        index = target_atom
+    elif isinstance(target_atom, Atom):
+        try:
+            # Atomオブジェクトがatoms内に存在する場合、そのインデックスを取得
+            index = target_atom.index
+        except ValueError:
+            raise ValueError("指定されたAtomはatoms内に存在しません。")
+    else:
+        raise TypeError("target_atom は int または ase.Atom を指定してください。")
+
+    # --- インデックスの範囲チェック ---
+    if not (0 <= index < len(atoms)):
+        raise IndexError(
+            f"指定されたインデックス {index} は範囲外です（0-{len(atoms)-1}）。"
+        )
+
+    # --- 隣接原子のインデックスを取得 ---
+    neighbor_indices = get_neighbors(atoms, index, return_type="indices")
+
+    # --- PCA用の点群を構築 ---
+    point_indices = list(neighbor_indices)
+    if include_target:
+        point_indices.append(index)
+
+    # --- 点数の妥当性チェック ---
+    if len(point_indices) < 3:
+        raise ValueError(
+            f"平面を一意に定義するための点数が不足しています。"
+            f"必要: 3点以上、取得: {len(point_indices)}点"
+        )
+
+    # --- 座標データを取得 ---
+    points = np.array([atoms[i].position for i in point_indices])
+
+    # --- 1. 重心を計算 ---
+    centroid = np.mean(points, axis=0)
+
+    # --- 2. 中心化 ---
+    centered_points = points - centroid
+
+    # --- 3. 共分散行列を計算 ---
+    n_points = len(points)
+    H = np.dot(centered_points.T, centered_points) / n_points
+
+    # --- 4. 固有値分解 ---
+    eigvals, eigvecs = np.linalg.eigh(H)
+
+    # --- 5. 最小固有値の固有ベクトルを法線ベクトルとする ---
+    min_eigval_idx = np.argmin(eigvals)
+    normal = eigvecs[:, min_eigval_idx].copy()
+
+    # --- 共線性（退化）のチェック ---
+    # 固有値を昇順にソート
+    sorted_eigvals = np.sort(eigvals)
+    min_eigval = sorted_eigvals[0]
+    second_min_eigval = sorted_eigvals[1]
+
+    # 最小固有値が非常に小さく、かつ2番目との比が小さい場合は共線と判定
+    min_tolerance = 1e-12
+    ratio_tolerance = 1e-6
+
+    if min_eigval < min_tolerance:
+        raise ValueError(
+            "指定された点群が共線状態で、平面を一意に定義できません。"
+            f"最小固有値: {min_eigval:.2e} < 許容値: {min_tolerance:.2e}"
+        )
+
+    # 固有値の比が小さすぎる場合も共線と判定
+    if second_min_eigval > 0 and min_eigval / second_min_eigval < ratio_tolerance:
+        raise ValueError(
+            "指定された点群が近似的に共線状態で、平面を安定に定義できません。"
+            f"固有値比: {min_eigval / second_min_eigval:.2e} < 許容値: {ratio_tolerance:.2e}"
+        )
+
+    # --- 6. 参照ベクトルによる符号調整 ---
+    if reference_vector is not None:
+        ref_vec = np.asarray(reference_vector)
+        if np.allclose(ref_vec, 0):
+            raise ValueError("reference_vectorはゼロベクトルにできません。")
+
+        # 内積が負の場合は符号を反転
+        if np.dot(normal, ref_vec) < 0:
+            normal = -normal
+
+    # --- 7. 正規化 ---
+    if normalize:
+        normal = normal / np.linalg.norm(normal)
+
+    # --- 8. 返却形式に応じて出力 ---
+    if return_plane:
+        # 平面の方程式: normal · r + d = 0
+        d = -np.dot(normal, centroid)
+        return normal, centroid, d
+    else:
+        return normal
 
 
 # (クラスター用)クラスターにくっつける
