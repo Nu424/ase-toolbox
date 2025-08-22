@@ -63,6 +63,7 @@ def calculate_adsorption_energy(
     opt_maxsteps: int = 3000,
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
+    copy_atoms: bool = True,
 ) -> float:
     """
     吸着エネルギーを計算する。
@@ -86,6 +87,7 @@ def calculate_adsorption_energy(
         logger (ConditionalLogger | None, optional): ログ出力制御。
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
+        copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
 
     Returns:
         float: 吸着エネルギー[eV]。負の値は吸着が熱力学的に有利であることを示す。
@@ -135,6 +137,7 @@ def calculate_adsorption_energy(
         maxsteps=opt_maxsteps,
         label="吸着後構造",
         logger=logger,
+        copy_atoms=copy_atoms,
     )
 
     # --- 2. 各反応物構造のエネルギー計算 ---
@@ -154,6 +157,7 @@ def calculate_adsorption_energy(
             maxsteps=opt_maxsteps,
             label=label,
             logger=logger,
+            copy_atoms=copy_atoms,
         )
         reactant_energies.append(e_reactant)
 
@@ -358,6 +362,7 @@ def calculate_formation_energy(
     reference_lattice_parameters: Optional[dict[str, float]] = None,
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
+    copy_atoms: bool = True,
 ) -> float:
     """
     金属の生成エネルギーを計算する。
@@ -382,6 +387,7 @@ def calculate_formation_energy(
         logger (ConditionalLogger | None, optional): ログ出力制御。
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
+        copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
 
     Returns:
         float: 生成エネルギー[eV]。負の値は化合物形成が熱力学的に有利であることを示す。
@@ -432,6 +438,7 @@ def calculate_formation_energy(
         maxsteps=opt_maxsteps,
         label="化合物構造",
         logger=logger,
+        copy_atoms=copy_atoms,
     )
 
     # --- 3. 各純元素のエネルギー計算 ---
@@ -471,6 +478,7 @@ def calculate_formation_energy(
                 maxsteps=opt_maxsteps,
                 label=f"純元素 {element}",
                 logger=logger,
+                copy_atoms=copy_atoms,
             )
 
             # 原子あたりのエネルギーに正規化
@@ -779,6 +787,7 @@ def calculate_gibbs_free_energy(
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
     cleanup_vibrations: bool = True,
+    copy_atoms: bool = True,
 ):
     """
     ギブス自由エネルギーを計算する。
@@ -794,6 +803,7 @@ def calculate_gibbs_free_energy(
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
         cleanup_vibrations (bool): 振動計算後にファイルをクリーンアップするか
+        copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
 
     Returns:
         float: ギブス自由エネルギー。Δではない。
@@ -840,7 +850,7 @@ def calculate_gibbs_free_energy(
             maxsteps=opt_maxsteps,
             label=f"構造最適化: {atoms.symbols}",
             logger=logger,
-            copy_atoms=False,  # 元のatomsを直接変更
+            copy_atoms=copy_atoms,
         )
     else:
         logger.info("構造最適化はスキップされました (do_opt=False)。")
@@ -983,6 +993,7 @@ def calculate_delta_g(
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
     cleanup_vibrations: bool = True,
+    copy_atoms: bool = True,
 ):
     """
     ギブス自由エネルギーを計算する。CHEモデルに対応している
@@ -1001,6 +1012,7 @@ def calculate_delta_g(
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
         cleanup_vibrations (bool): 振動計算後にファイルをクリーンアップするか
+        copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
 
     Returns:
         float: 反応物と生成物のギブス自由エネルギーの差(ΔG)
@@ -1044,6 +1056,7 @@ def calculate_delta_g(
             opt_maxsteps=opt_maxsteps,
             logger=logger,
             cleanup_vibrations=cleanup_vibrations,
+            copy_atoms=copy_atoms,
         )
 
         # CHEモデル計算の各項
@@ -1085,6 +1098,7 @@ def calculate_delta_g(
                 opt_maxsteps=opt_maxsteps,
                 logger=logger,
                 cleanup_vibrations=cleanup_vibrations,
+                copy_atoms=copy_atoms,
             )
             reactants_gs.append(g)
 
@@ -1108,6 +1122,7 @@ def calculate_delta_g(
                 opt_maxsteps=opt_maxsteps,
                 logger=logger,
                 cleanup_vibrations=cleanup_vibrations,
+                copy_atoms=copy_atoms,
             )
             products_gs.append(g)
 
@@ -1197,6 +1212,7 @@ def optimize_lattice_constant(
     optimizer_cls: type[Optimizer] = FIRELBFGS,
     opt_fmax: float = 0.01,
     opt_maxsteps: int | None = None,
+    copy_atoms: bool = True,
 ) -> LatticeConstant:
     """格子定数を最適化してLatticeConstantオブジェクトを返す
 
@@ -1209,7 +1225,7 @@ def optimize_lattice_constant(
         optimizer_cls (type[Optimizer]): 使用する最適化アルゴリズムクラス（デフォルト: FIRELBFGS）
         opt_fmax (float): 収束条件（原子にかかる力の最大値） [eV/Å]
         opt_maxsteps (int | None): 最大ステップ数。Noneの場合は制限なし
-
+        copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
     Returns:
         LatticeConstant: 最適化後の格子定数
 
@@ -1231,7 +1247,10 @@ def optimize_lattice_constant(
         )
 
     # --- 原子構造のコピーを作成（元の構造を保持） ---
-    atoms_copy = atoms.copy()
+    if copy_atoms:
+        atoms_copy = atoms.copy()
+    else:
+        atoms_copy = atoms
 
     # --- 計算機の設定 ---
     if calculator is not None:
