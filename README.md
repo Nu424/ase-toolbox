@@ -22,7 +22,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 「何をする関数か」「どんな場面で使うか」「主な引数」「戻り値」を、できるだけコンパクトにまとめています。詳細は各関数のdocstringと `ase-toolbox.ipynb` をどうぞ。
 
 ### CalcValue.py（値の計算）
-- **coordination_number(atoms, target_atom, return_type="atoms", *, cutoffs=None, cutoff_scaling=1.0)**
+- **coordination_number(atoms, target_atom, return_type="atoms", cutoffs=None, cutoff_scaling=1.0)**
   - 🧩 何をする: 指定原子の配位数と、その隣接原子を返します。
   - 🗺️ 使う場面: クラスターや表面の局所配位の把握に。
   - 🔧 主な引数:
@@ -57,7 +57,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `return_type (Literal["atoms","indices"])`: 出力形式。
   - ↩️ 戻り値: `list[ase.Atom] | list[int]`。
 
-- **separate_layers(atoms, return_type="atoms", *, decimals=4, sort_by_z=True)**
+- **separate_layers(atoms, return_type="atoms", decimals=4, sort_by_z=True)**
   - 🧩 何をする: z座標で層を検出し、層ごとに原子をグルーピング。
   - 🗺️ 場面: スラブで下層/上層に手を入れたいとき。
   - 🔧 主な引数:
@@ -85,14 +85,14 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `before_atoms (ase.Atoms)`, `after_atoms (ase.Atoms)`。
   - ↩️ 戻り値: `list[int]`。
 
-- **get_neighbors_with_coordination_condition(atoms, target_atom, return_type="atoms", *, cutoffs=None, cutoff_scaling=1.0, upper_tolerance=1, lower_tolerance=1)**
+- **get_neighbors_with_coordination_condition(atoms, target_atom, return_type="atoms", cutoffs=None, cutoff_scaling=1.0, upper_tolerance=1, lower_tolerance=1)**
   - 🧩 何をする: 対象原子の配位数±許容幅に収まる配位数をもつ隣接原子だけを抽出。
   - 🗺️ 場面: 局所環境が似た原子だけを拾いたい。
   - 🔧 主な引数: `atoms`, `target_atom`, `return_type`, `cutoffs`, `cutoff_scaling`, `upper_tolerance`, `lower_tolerance`。
   - ↩️ 戻り値: `list[ase.Atom] | list[int]`。
 
 ### HandleAtoms.py（原子操作）
-- **move_atoms(base_structure, target, direction, distance, *, inplace=False)**
+- **move_atoms(base_structure, target, direction, distance, inplace=False)**
   - 🧩 何をする: 指定原子（複数指定OK）を、与えた方向へ距離だけ平行移動。
   - 🗺️ 場面: 手動でちょっと動かしたい・探索したい。
   - 🔧 主な引数:
@@ -103,25 +103,25 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `inplace (bool)`: 直接書換えるか（Falseでコピー返却）。
   - ↩️ 戻り値: 変更後 `ase.Atoms`（`inplace=True`なら引数のまま）。
 
-- **fix_layers(atoms, fixed_layers, *, inplace=False, decimals=4, logger=None, enable_logging=True)**
+- **fix_layers(atoms, fixed_layers, inplace=False, decimals=4, logger=None, enable_logging=True)**
   - 🧩 何をする: 下から `fixed_layers` 個の層に `FixAtoms` 制約を付与。
   - 🗺️ 場面: スラブ計算の下層固定。
   - 🔧 主な引数: `atoms`, `fixed_layers (int)`, `inplace`, `decimals`, `logger`, `enable_logging`。
   - ↩️ 戻り値: 制約付き `ase.Atoms`。
 
-- **substitute_elements(atoms, target, new, *, inplace=False, seed=None)**
+- **substitute_elements(atoms, target, new, inplace=False, seed=None)**
   - 🧩 何をする: 指定原子を新しい元素に置換。`new` は単一記号 or 組成辞書（合計1）。
   - 🗺️ 場面: ドーピング、ランダム置換。
   - 🔧 主な引数: `atoms`, `target`, `new (str | Mapping[str,float])`, `inplace`, `seed`。
   - ↩️ 戻り値: 置換後 `ase.Atoms`。
 
-- **compute_surface_normal(atoms, target_atom, *, include_target=True, reference_vector=None, normalize=True, return_plane=False)**
+- **compute_surface_normal(atoms, target_atom, include_target=True, reference_vector=None, normalize=True, return_plane=False)**
   - 🧩 何をする: 対象原子近傍をPCAで局所平面近似し、法線ベクトルを返す。
   - 🗺️ 場面: 「外向き」方向を知りたい（`reference_vector`で向きを安定化）。
   - 🔧 主な引数: `atoms`, `target_atom`, `include_target`, `reference_vector (ndarray|None)`, `normalize`, `return_plane`。
   - ↩️ 戻り値: `normal: ndarray(3,)` または `(normal, centroid, d)`。
 
-- **place_adsorbate_along_normal(substrate, adsorbate, target_atom, distance, *, upper_tolerance=1, lower_tolerance=1)**
+- **place_adsorbate_along_normal(substrate, adsorbate, target_atom, distance, upper_tolerance=1, lower_tolerance=1)**
   - 🧩 何をする: 局所法線に +z を合わせるよう吸着分子を回転・配置し、基板と結合。
   - 🗺️ 場面: まずは「自然な初期配置」を素早く作る。
   - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `distance (float)`, `upper_tolerance`, `lower_tolerance`。
@@ -154,7 +154,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 ### Calculation.py（エネルギー・NEB・熱化学）
 - データクラス: **CAEInput(structure, calc_mode)**, **CGFEInput(...)**, **LatticeConstant(a,b,c,alpha,beta,gamma)**
 
-- **calculate_adsorption_energy(calculator_molecule, calculator_solid, adsorbed_structure_input, reactant_structures_input, *, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True)**
+- **calculate_adsorption_energy(calculator_molecule, calculator_solid, adsorbed_structure_input, reactant_structures_input, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True)**
   - 🧩 何をする: 吸着後構造と、反応物群をそれぞれ最適化→エネルギーから吸着エネルギーを返す。
   - 🗺️ 場面: 分子/固体の混在系での吸着評価（Matlantis計算を想定）。
   - 🔧 主な引数:
@@ -164,21 +164,21 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `logger`, `enable_logging`。
   - ↩️ 戻り値: `float`（eV、負なら有利）。
 
-- **analyze_composition(atoms)** / **generate_reference_structure(element, *, crystal_structure="auto", lattice_parameter=None, ...)**
+- **analyze_composition(atoms)** / **generate_reference_structure(element, crystal_structure="auto", lattice_parameter=None, ...)**
   - 🧩 何をする: 元素組成の辞書作成 / 純元素参照構造（fcc/bcc/hcp自動判別も可）の生成。
   - 🔧 引数の例: `element (str)`, `crystal_structure ("auto"|"fcc"|"bcc"|"hcp")`, `lattice_parameter (float|None)`。
 
-- **calculate_formation_energy(calculator, compound_structure, *, optimizer_cls, opt_fmax, opt_maxsteps, reference_crystal_structures=None, reference_lattice_parameters=None, logger=None, enable_logging=True)**
+- **calculate_formation_energy(calculator, compound_structure, optimizer_cls, opt_fmax, opt_maxsteps, reference_crystal_structures=None, reference_lattice_parameters=None, logger=None, enable_logging=True)**
   - 🧩 何をする: 化合物のエネルギーと、純元素参照エネルギー（原子あたり）から生成エネルギー。
   - 🔧 主な引数: `calculator`, `compound_structure (ase.Atoms)`, 参照構造の上書き辞書など。
   - ↩️ 戻り値: `float`（eV、負なら形成有利）。
 
-- **run_neb(init_atoms, final_atoms, num_intermediate_images, optimizer_cls, estimator, *, fmax=0.05, steps=500, trajectory_path=None, pre_align=True, k=0.1, climb=True, parallel=False, mic=None, interpolate_kwargs=None)**
+- **run_neb(init_atoms, final_atoms, num_intermediate_images, optimizer_cls, estimator, fmax=0.05, steps=500, trajectory_path=None, pre_align=True, k=0.1, climb=True, parallel=False, mic=None, interpolate_kwargs=None)**
   - 🧩 何をする: NEBを実行して全画像とエネルギーを返す（Matlantisの `Estimator` を想定）。
   - 🔧 主な引数: `init_atoms`, `final_atoms`, `num_intermediate_images (int)`, `optimizer_cls`, `estimator`, `fmax`, `steps`, `trajectory_path`, `pre_align`, `k`, `climb`, `parallel`, `mic`, `interpolate_kwargs`。
   - ↩️ 戻り値: `(images: list[ase.Atoms], energies: list[float])`。
 
-- **plot_energy_profile(energies, *, ax=None, xlabel="replica", ylabel="energy [eV]", title=None, show=True)**
+- **plot_energy_profile(energies, ax=None, xlabel="replica", ylabel="energy [eV]", title=None, show=True)**
   - 📈 何をする: エネルギープロファイルを簡単プロット。
   - 🔧 主な引数: `energies (Sequence[float])`, 軸ラベル、`show`。
   - ↩️ 戻り値: `(fig, ax)`。
@@ -188,7 +188,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `energies (Sequence[float])`。
   - ↩️ 戻り値: `(ts_index: int, e_forward: float, e_backward: float)`。
 
-- **calculate_gibbs_free_energy(calculator_molecule, calculator_solid, calc_input, *, temperature=298.15, pressure=101325.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True)**
+- **calculate_gibbs_free_energy(calculator_molecule, calculator_solid, calc_input, temperature=298.15, pressure=101325.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True)**
   - 🧩 何をする: 構造最適化＋振動解析→IdealGasThermo/HarmonicThermoで G（またはF）を評価。
   - 🔧 主な引数:
     - `calculator_molecule / calculator_solid (Calculator)`。
@@ -196,7 +196,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `temperature (K)`, `pressure (Pa)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `cleanup_vibrations` ほか。
   - ↩️ 戻り値: `float`（ギブス自由エネルギー。Δではなく個別G）。
 
-- **calculate_delta_g(calculator_molecule, calculator_solid, reactants, products, *, temperature=298.15, pressure=101325.0, electrode_potential=0.0, pH=7.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True)**
+- **calculate_delta_g(calculator_molecule, calculator_solid, reactants, products, temperature=298.15, pressure=101325.0, electrode_potential=0.0, pH=7.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True)**
   - 🧩 何をする: 反応物と生成物の総G差（ΔG）を返す。`"CHE"` 指定でCHEモデル（0.5·G(H2) − e·U + kBT·ln10·pH）。
   - 🔧 主な引数: `reactants/products (list[CGFEInput | "CHE"])`, `electrode_potential (V vs SHE)`, `pH`, 温度・圧力など。
   - ↩️ 戻り値: `float`（eV）。
@@ -209,7 +209,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 ### util.py（ユーティリティ）
 - **ConditionalLogger / ensure_logger / setup_logger**
   - 🧩 何をする: ログ出力を簡単にON/OFFしつつ、ファイル/コンソールへ整形出力。
-- **optimize_and_get_energy(atoms, calculator, optimizer_cls, fmax, maxsteps, label, logger, *, copy_atoms=True)**
+- **optimize_and_get_energy(atoms, calculator, optimizer_cls, fmax, maxsteps, label, logger, copy_atoms=True)**
   - 🧩 何をする: 構造最適化を実行し、最終エネルギーを返す（ログ込み）。
   - 🔧 主な引数: `atoms`, `calculator`, `optimizer_cls`, `fmax`, `maxsteps`, `label`, `logger`, `copy_atoms`。
   - ↩️ 戻り値: `float`（eV）。
@@ -235,7 +235,7 @@ PythonのASEで使用できるヘルパー関数を用意し、シミュレー�
 - 適切な型ヒントをつける(3.11以降のベストな型ヒントをつけてください)
 - 引数で原子を指定する場合、ase.Atomと原子のインデックスの両方を受け付けられるようにする
 - 私が実行するので、あなたがテストをする必要はない。実行結果を後でフィードバックします。
-``` 
+```　
 # --- target_atom の型に応じてインデックスを取得 ---
 if isinstance(target_atom, int):
     index = target_atom
@@ -247,15 +247,15 @@ elif isinstance(target_atom, Atom):
         raise ValueError("指定されたAtomはatoms内に存在しません。")
 else:
     raise TypeError("target_atom は int または ase.Atom を指定してください。")
-``` 
+```　
 - 原子を出力する場合、return_type: str = Literal["atoms", "indices"]引数で、list[Atoms]とlist[int]を指定して出力できるようにする
-``` 
+```　
 # --- 出力形式に応じて返す ---
 if return_type == "atoms":
     return [atoms[i] for i in atom_indices]
 else:
     return list(atom_indices)
-``` 
+```　
 ----------
 
-```　
+```
