@@ -154,23 +154,23 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 ### Calculation.py（エネルギー・NEB・熱化学）
 - データクラス: **CAEInput(structure, calc_mode)**, **CGFEInput(...)**, **LatticeConstant(a,b,c,alpha,beta,gamma)**
 
-- **calculate_adsorption_energy(calculator_molecule, calculator_solid, adsorbed_structure_input, reactant_structures_input, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True)**
+- **calculate_adsorption_energy(calculator_molecule, calculator_solid, adsorbed_structure_input, reactant_structures_input, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, copy_atoms=True)**
   - 🧩 何をする: 吸着後構造と、反応物群をそれぞれ最適化→エネルギーから吸着エネルギーを返す。
   - 🗺️ 場面: 分子/固体の混在系での吸着評価（Matlantis計算を想定）。
   - 🔧 主な引数:
     - `calculator_molecule / calculator_solid (Calculator)`: 分子/固体用計算機。
     - `adsorbed_structure_input (CAEInput)`: 吸着後構造と計算モード。
     - `reactant_structures_input (list[CAEInput])`: 反応物群。
-    - `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `logger`, `enable_logging`。
+    - `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `logger`, `enable_logging`, `copy_atoms`。
   - ↩️ 戻り値: `float`（eV、負なら有利）。
 
 - **analyze_composition(atoms)** / **generate_reference_structure(element, crystal_structure="auto", lattice_parameter=None, ...)**
   - 🧩 何をする: 元素組成の辞書作成 / 純元素参照構造（fcc/bcc/hcp自動判別も可）の生成。
   - 🔧 引数の例: `element (str)`, `crystal_structure ("auto"|"fcc"|"bcc"|"hcp")`, `lattice_parameter (float|None)`。
 
-- **calculate_formation_energy(calculator, compound_structure, optimizer_cls, opt_fmax, opt_maxsteps, reference_crystal_structures=None, reference_lattice_parameters=None, logger=None, enable_logging=True)**
+- **calculate_formation_energy(calculator, compound_structure, optimizer_cls, opt_fmax, opt_maxsteps, reference_crystal_structures=None, reference_lattice_parameters=None, logger=None, enable_logging=True, copy_atoms=True)**
   - 🧩 何をする: 化合物のエネルギーと、純元素参照エネルギー（原子あたり）から生成エネルギー。
-  - 🔧 主な引数: `calculator`, `compound_structure (ase.Atoms)`, 参照構造の上書き辞書など。
+  - 🔧 主な引数: `calculator`, `compound_structure (ase.Atoms)`, 参照構造の上書き辞書など, `copy_atoms`。
   - ↩️ 戻り値: `float`（eV、負なら形成有利）。
 
 - **run_neb(init_atoms, final_atoms, num_intermediate_images, optimizer_cls, estimator, fmax=0.05, steps=500, trajectory_path=None, pre_align=True, k=0.1, climb=True, parallel=False, mic=None, interpolate_kwargs=None)**
@@ -188,22 +188,22 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `energies (Sequence[float])`。
   - ↩️ 戻り値: `(ts_index: int, e_forward: float, e_backward: float)`。
 
-- **calculate_gibbs_free_energy(calculator_molecule, calculator_solid, calc_input, temperature=298.15, pressure=101325.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True)**
+- **calculate_gibbs_free_energy(calculator_molecule, calculator_solid, calc_input, temperature=298.15, pressure=101325.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True, copy_atoms=True)**
   - 🧩 何をする: 構造最適化＋振動解析→IdealGasThermo/HarmonicThermoで G（またはF）を評価。
   - 🔧 主な引数:
     - `calculator_molecule / calculator_solid (Calculator)`。
     - `calc_input (CGFEInput)`: 振動対象・モードなどを含む入力。
-    - `temperature (K)`, `pressure (Pa)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `cleanup_vibrations` ほか。
+    - `temperature (K)`, `pressure (Pa)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `cleanup_vibrations`, `copy_atoms` ほか。
   - ↩️ 戻り値: `float`（ギブス自由エネルギー。Δではなく個別G）。
 
-- **calculate_delta_g(calculator_molecule, calculator_solid, reactants, products, temperature=298.15, pressure=101325.0, electrode_potential=0.0, pH=7.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True)**
+- **calculate_delta_g(calculator_molecule, calculator_solid, reactants, products, temperature=298.15, pressure=101325.0, electrode_potential=0.0, pH=7.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True, copy_atoms=True)**
   - 🧩 何をする: 反応物と生成物の総G差（ΔG）を返す。`"CHE"` 指定でCHEモデル（0.5·G(H2) − e·U + kBT·ln10·pH）。
-  - 🔧 主な引数: `reactants/products (list[CGFEInput | "CHE"])`, `electrode_potential (V vs SHE)`, `pH`, 温度・圧力など。
+  - 🔧 主な引数: `reactants/products (list[CGFEInput | "CHE"])`, `electrode_potential (V vs SHE)`, `pH`, 温度・圧力など, `copy_atoms`。
   - ↩️ 戻り値: `float`（eV）。
 
-- **optimize_lattice_constant(atoms, calculator=None, optimizer_cls=FIRELBFGS, opt_fmax=0.01, opt_maxsteps=None)**
+- **optimize_lattice_constant(atoms, calculator=None, optimizer_cls=FIRELBFGS, opt_fmax=0.01, opt_maxsteps=None, copy_atoms=True)**
   - 🧩 何をする: `UnitCellFilter` でセル形状・体積を最適化し、格子定数を返す。
-  - 🔧 主な引数: `atoms (ase.Atoms)`, `calculator (Calculator|None)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`。
+  - 🔧 主な引数: `atoms (ase.Atoms)`, `calculator (Calculator|None)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `copy_atoms`。
   - ↩️ 戻り値: `LatticeConstant`（a,b,c,α,β,γ）。
 
 ### util.py（ユーティリティ）
