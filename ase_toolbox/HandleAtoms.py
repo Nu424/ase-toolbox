@@ -15,12 +15,12 @@ from ase import Atoms, Atom
 from ase.constraints import FixAtoms
 import numpy as np
 from numpy.typing import NDArray
-from FindAtoms import (
+from .FindAtoms import (
     separate_layers,
     get_neighbors_with_coordination_condition,
     get_neighbors,
 )
-from util import ConditionalLogger, ensure_logger, resolve_target_indices
+from .util import ConditionalLogger, ensure_logger, resolve_target_indices
 
 
 # 手動で微妙に動かす

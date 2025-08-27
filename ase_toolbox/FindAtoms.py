@@ -17,7 +17,7 @@ from typing import Literal, Optional, Sequence
 from ase import Atoms, Atom
 from ase.neighborlist import NeighborList, natural_cutoffs
 import numpy as np
-from CalcValue import coordination_number
+from .CalcValue import coordination_number
 
 
 # インデックスでピンポイントに指定する

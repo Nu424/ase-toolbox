@@ -38,7 +38,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from util import ConditionalLogger, ensure_logger, optimize_and_get_energy
+from .util import ConditionalLogger, ensure_logger, optimize_and_get_energy
 
 
 # ----------
