@@ -132,6 +132,12 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `distance (float)`, `upper_tolerance`, `lower_tolerance`。
   - ↩️ 戻り値: 結合後 `ase.Atoms`。
 
+- **place_adsorbate_on_surface(substrate, adsorbate, target_atom, height, position, separate_layers_decimals=4, allow_search_surface_atom=True, inplace=False)**
+  - 🧩 何をする: 指定した構造表面に、吸着分子を配置する。add_adsorbate()の高性能なラッパー関数。
+  - 🗺️ 場面: 表面に吸着分子を配置したい。
+  - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `height (float)`, `position (Literal["top", "bridge", "hollow"])`, `separate_layers_decimals`, `allow_search_surface_atom`, `inplace`。
+  - ↩️ 戻り値: 結合後 `ase.Atoms`。
+
 ### BuildSolvent.py（溶媒化の構築）
 - **ComponentSpec(name, concentration_mol_L, molecule)**（dataclass）
   - 🧩 何をする: 成分名・濃度（mol/L）・分子指定（SMILES/Atoms/ファイルパス）を保持。
@@ -230,6 +236,14 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 
 ---
 ## 開発メモ
+### 新しい関数を作ったときの流れ
+1. 実装する
+2. Matlantis環境で動作検証する
+3. ドキュメントを更新する
+   - モジュールの一番上のコメント部分(docstring?)
+   - README.mdの関数一覧
+   - try-ase-toolbox.ipynbのおためしコード
+
 ### ヘルパー関数を作ってもらうときのプロンプト例
 ```markdown
 PythonのASEで使用できるヘルパー関数を用意し、シミュレーションを効率的に実装できるようにしようと考えています。

@@ -8,6 +8,7 @@ ASEのAtomsオブジェクトを操作・処理するための関数をまとめ
 - substitute_elements(): 原子を置き換える
 - compute_surface_normal(): (クラスター用)法線ベクトルを計算する
 - place_adsorbate_along_normal(): (クラスター用)クラスターにくっつける
+- place_adsorbate_on_surface(): (表面用)表面にくっつける
 """
 
 from typing import Literal, Sequence, Mapping, Optional
@@ -657,7 +658,6 @@ def place_adsorbate_on_surface(
     position: Literal["top", "bridge", "hollow"],
     *,
     separate_layers_decimals: int = 4,
-    # target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
     allow_search_surface_atom: bool = True,
     inplace: bool = False,
 ) -> Atoms:
@@ -671,6 +671,9 @@ def place_adsorbate_on_surface(
             インデックスまたはAtomオブジェクトを指定可能。Noneの場合は重心に最も近い原子を探す。
         height (float): 吸着分子の高さ [Å]。
         position (Literal["top", "bridge", "hollow"]): 吸着分子の位置。
+        separate_layers_decimals (int): 層を分割する際の小数点以下の桁数。
+        allow_search_surface_atom (bool): target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
+        inplace (bool): もとの構造を置き換えるかどうか。
 
     Returns:
         ase.Atoms: ベースと配置済み吸着分子を結合した構造。
