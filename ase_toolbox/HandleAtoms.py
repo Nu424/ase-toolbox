@@ -10,12 +10,14 @@ ASEのAtomsオブジェクトを操作・処理するための関数をまとめ
 - place_adsorbate_along_normal(): (クラスター用)クラスターにくっつける
 """
 
-from typing import Sequence, Mapping, Optional
+from typing import Literal, Sequence, Mapping, Optional
 from ase import Atoms, Atom
+from ase.build import add_adsorbate
 from ase.constraints import FixAtoms
 import numpy as np
 from numpy.typing import NDArray
 from .FindAtoms import (
+    find_central_atom,
     separate_layers,
     get_neighbors_with_coordination_condition,
     get_neighbors,
@@ -645,3 +647,137 @@ def _compute_rotation_matrix(
     R = np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
 
     return R
+
+
+def place_adsorbate_on_surface(
+    substrate: Atoms,
+    adsorbate: Atoms,
+    target_atom: int | Atom | None,
+    height: float,
+    position: Literal["top", "bridge", "hollow"],
+    *,
+    separate_layers_decimals: int = 4,
+    # target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
+    allow_search_surface_atom: bool = True,
+    inplace: bool = False,
+) -> Atoms:
+    """
+    指定した構造表面に、吸着分子を配置する。add_adsorbate()の高性能なラッパー関数。
+
+    Args:
+        substrate (ase.Atoms): ベースとなる原子構造。
+        adsorbate (ase.Atoms): 配置する吸着分子。
+        target_atom (int | ase.Atom | None): 基準となるベース上の原子。
+            インデックスまたはAtomオブジェクトを指定可能。Noneの場合は重心に最も近い原子を探す。
+        height (float): 吸着分子の高さ [Å]。
+        position (Literal["top", "bridge", "hollow"]): 吸着分子の位置。
+
+    Returns:
+        ase.Atoms: ベースと配置済み吸着分子を結合した構造。
+
+    Raises:
+        ValueError: position が 'top'、'bridge'、'hollow' 以外の場合。
+        ValueError: target_atomが表面に存在しない場合、allow_search_surface_atomがFalseの場合。
+        ValueError: 隣接原子が存在せず、bridgeまたはhollowの位置を決定できない場合。
+        ValueError: 共通して隣接する原子が存在せず、hollowの位置を決定できない場合。
+        TypeError: target_atom の型が不正な場合。
+        IndexError: 指定されたインデックスが範囲外の場合。
+    """
+    # ---(準備)target_atomを、Atom|Noneにする
+    if isinstance(target_atom, int):
+        target_atom_index: int = target_atom
+        target_atom: Atom | None = substrate[target_atom]
+    elif isinstance(target_atom, Atom):
+        target_atom_index: int = target_atom.index
+        target_atom: Atom | None = target_atom
+    elif target_atom is None:
+        target_atom: Atom | None = None
+        target_atom_index: int = None
+    else:
+        raise TypeError("target_atom は int または ase.Atom または None を指定してください。")
+
+    # ---表面原子を取得する
+    layers: list[list[Atom]] = separate_layers(substrate,
+                                               decimals=separate_layers_decimals,
+                                               return_type="atoms")
+    top_layer: list[Atom] = layers[-1]
+    top_layer_indices: list[int] = [atom.index for atom in top_layer]
+
+    # ---target_atomを決定する
+    if target_atom is None:
+        # target_atomがNoneの場合、重心に最も近い原子を探す
+        target_atom = find_central_atom(top_layer)
+        target_atom_index = target_atom.index
+    elif target_atom_index not in top_layer_indices:  # 含まれるか判定は、インデックスで行う
+        # target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探す
+        if allow_search_surface_atom:
+            nearest_surface_atom = min(top_layer, key=lambda x: np.linalg.norm(
+                x.position[:2] - target_atom.position[:2]))
+            target_atom = nearest_surface_atom
+        else:
+            raise ValueError("指定された原子は表面に存在しません。")
+
+    target_atom: Atom = target_atom  # ここまでで、target_atomはAtomオブジェクトになっている
+
+    # ---positionから、xy座標を取得する
+    if position == "top":
+        position_xy = target_atom.position[:2]
+    elif position in ["bridge", "hollow"]:
+        # 表面上で、target_atomの隣接原子を探す
+        target_atom_neighbors = get_neighbors(substrate,
+                                              target_atom,
+                                              return_type="atoms")
+        # 表面上の隣接原子のみを残す
+        target_atom_neighbors = list(
+            filter(
+                lambda x: np.isclose(
+                    x.position[2],
+                    target_atom.position[2]),
+                target_atom_neighbors))
+        if len(target_atom_neighbors) == 0:
+            raise ValueError("隣接原子が存在せず、bridgeまたはhollowの位置を決定できません。")
+        # ---bridgeの場合、1番目の隣接原子との中点を探す
+        if position == "bridge":
+            position_xy = (target_atom.position[:2] +
+                           target_atom_neighbors[0].position[:2]) / 2
+        elif position == "hollow":
+            # ---hollowの場合、もう1つの原子を探す
+            # target_atomも隣接原子も、共通して隣接する原子を探す
+            # お互いの友だちだったら、そこは3人グループだよね、という考え方
+            for neighbor in target_atom_neighbors:
+                neighbor_neighbors = get_neighbors(substrate,
+                                                   neighbor,
+                                                   return_type="atoms")
+                # (表面上の隣接原子のみを残す)
+                neighbor_neighbors = list(
+                    filter(
+                        lambda x: np.isclose(x.position[2],
+                                             neighbor.position[2]),
+                        neighbor_neighbors))
+                # 積集合を求める
+                common_neighbor_indices = set([a.index for a in target_atom_neighbors]) & \
+                    set([a.index for a in neighbor_neighbors])
+
+                if len(common_neighbor_indices) > 0:
+                    common_neighbor_index = list(common_neighbor_indices)[0]
+                    common_neighbor = substrate[common_neighbor_index]
+                    position_xy = (target_atom.position[:2] +
+                                   neighbor.position[:2] +
+                                   common_neighbor.position[:2]) / 3
+                    break
+            else:
+                raise ValueError("共通して隣接する原子が存在せず、hollowの位置を決定できません。")
+    else:
+        raise ValueError("position は 'top'、'bridge'、'hollow' を指定してください。")
+
+    # ---吸着させる
+    if inplace:
+        new_substrate = substrate
+    else:
+        new_substrate = substrate.copy()
+
+    add_adsorbate(new_substrate, adsorbate,
+                  height=height, position=position_xy)
+
+    # ---返却する
+    return new_substrate
