@@ -174,7 +174,7 @@ def optimize_and_get_energy(
 
 
 def resolve_target_indices(
-    base_atoms: Atoms, target: "int | Atom | Atoms | list[int] | list[Atom]"
+    base_atoms: Atoms, target: int | Atom | Atoms | list[int] | list[Atom]
 ) -> list[int]:
     """
     様々な形式のターゲット指定を、インデックスリストに正規化する。

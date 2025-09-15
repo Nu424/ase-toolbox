@@ -109,7 +109,7 @@ def fix_layers(
     inplace: bool = False,
     decimals: int = 4,
     logger: Optional[ConditionalLogger] = None,
-    enable_logging: bool = True,
+    enable_logging: bool = False,
 ) -> Atoms:
     """
     指定された数の下層を固定する制約を追加する。
@@ -267,7 +267,8 @@ def substitute_elements(
             symbols = list(new.keys())
 
             # --- 丸めベースで個数を算出し、最後の元素に差分を集約 ---
-            counts = {s: int(round(n_targets * frac)) for s, frac in new.items()}
+            counts = {s: int(round(n_targets * frac))
+                      for s, frac in new.items()}
 
             # 丸め誤差の補正
             diff = n_targets - sum(counts.values())
@@ -523,7 +524,8 @@ def place_adsorbate_along_normal(
         lower_tolerance=lower_tolerance,
     )
 
-    point_indices = list(neighbor_indices) + [target_index]  # include_target=True相当
+    point_indices = list(neighbor_indices) + \
+        [target_index]  # include_target=True相当
 
     if len(point_indices) < 3:
         raise ValueError(
