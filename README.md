@@ -62,7 +62,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `return_type (Literal["atoms","indices"])`: 出力形式。
   - ↩️ 戻り値: `list[ase.Atom] | list[int]`。
 
-- **separate_layers(atoms, return_type="atoms", decimals=4, sort_by_z=True)**
+- **separate_layers(atoms, return_type="atoms", decimals=4, sort_by_z=True, use_substrate_mask="auto")**
   - 🧩 何をする: z座標で層を検出し、層ごとに原子をグルーピング。
   - 🗺️ 場面: スラブで下層/上層に手を入れたいとき。
   - 🔧 主な引数:
@@ -70,7 +70,9 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `return_type (Literal["atoms","indices"])`: 出力形式。
     - `decimals (int)`: z丸め桁。層の判定に影響。
     - `sort_by_z (bool)`: 下→上の順で並べるか。
+    - `use_substrate_mask (Literal["auto",True,False])`: 基板マスクの使用設定。"auto" の場合、`is_substrate` マスクが存在すれば基板原子のみで層を検出。デフォルトは "auto"。
   - ↩️ 戻り値: `list[list[ase.Atom]] | list[list[int]]`（`layered[0]` が最下層）。
+  - 📝 メモ: 吸着分子配置後も正しく基板の層を検出するには、事前に `set_substrate_mask_all()` でマスクを設定してください。
 
 - **classify_surface_atoms(atoms, return_type="atoms", upper_tolerance=3)**
   - 🧩 何をする: 配位数の低い原子を「表面」、それ以外を「内側」に分類。
@@ -97,6 +99,16 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - ↩️ 戻り値: `list[ase.Atom] | list[int]`。
 
 ### HandleAtoms.py（原子操作）
+- **set_substrate_mask_all(atoms, is_substrate=True, inplace=True)**
+  - 🧩 何をする: 全原子に `is_substrate` マスクを設定する。
+  - 🗺️ 場面: 吸着分子を複数配置する前に、基板原子をマークしておく。これにより、後続の層検出や高さ基準が基板のみに基づいて決定されます。
+  - 🔧 主な引数:
+    - `atoms (ase.Atoms)`: マスクを設定する原子構造。
+    - `is_substrate (bool)`: 設定する値。True で基板、False で非基板。デフォルトは True。
+    - `inplace (bool)`: True の場合は atoms を直接変更。False の場合はコピーを作成。デフォルトは True。
+  - ↩️ 戻り値: マスクが設定された `ase.Atoms`。
+  - 📝 メモ: 複数の吸着分子を配置する場合、最初に `set_substrate_mask_all(slab)` で基板をマークすることで、`separate_layers()` や `place_adsorbate_on_surface()` が既存の吸着分子を無視し、常に基板のみから層や高さを決定します。
+
 - **move_atoms(base_structure, target, direction, distance, inplace=False)**
   - 🧩 何をする: 指定原子（複数指定OK）を、与えた方向へ距離だけ平行移動。
   - 🗺️ 場面: 手動でちょっと動かしたい・探索したい。
@@ -108,11 +120,12 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `inplace (bool)`: 直接書換えるか（Falseでコピー返却）。
   - ↩️ 戻り値: 変更後 `ase.Atoms`（`inplace=True`なら引数のまま）。
 
-- **fix_layers(atoms, fixed_layers, inplace=False, decimals=4, logger=None, enable_logging=True)**
+- **fix_layers(atoms, fixed_layers, inplace=False, decimals=4, logger=None, enable_logging=True, use_substrate_mask="auto")**
   - 🧩 何をする: 下から `fixed_layers` 個の層に `FixAtoms` 制約を付与。
   - 🗺️ 場面: スラブ計算の下層固定。
-  - 🔧 主な引数: `atoms`, `fixed_layers (int)`, `inplace`, `decimals`, `logger`, `enable_logging`。
+  - 🔧 主な引数: `atoms`, `fixed_layers (int)`, `inplace`, `decimals`, `logger`, `enable_logging`, `use_substrate_mask ("auto"|True|False)`。
   - ↩️ 戻り値: 制約付き `ase.Atoms`。
+  - 📝 メモ: `use_substrate_mask="auto"` の場合、`is_substrate` マスクが存在すれば基板原子のみで層を検出します。
 
 - **substitute_elements(atoms, target, new, inplace=False, seed=None)**
   - 🧩 何をする: 指定原子を新しい元素に置換。`new` は単一記号 or 組成辞書（合計1）。
@@ -132,11 +145,12 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `distance (float)`, `upper_tolerance`, `lower_tolerance`。
   - ↩️ 戻り値: 結合後 `ase.Atoms`。
 
-- **place_adsorbate_on_surface(substrate, adsorbate, target_atom, height, position, separate_layers_decimals=4, allow_search_surface_atom=True, inplace=False)**
+- **place_adsorbate_on_surface(substrate, adsorbate, target_atom, height, position, separate_layers_decimals=4, allow_search_surface_atom=True, inplace=False, use_substrate_mask="auto")**
   - 🧩 何をする: 指定した構造表面に、吸着分子を配置する。add_adsorbate()の高性能なラッパー関数。
   - 🗺️ 場面: 表面に吸着分子を配置したい。
-  - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `height (float)`, `position (Literal["top", "bridge", "hollow"])`, `separate_layers_decimals`, `allow_search_surface_atom`, `inplace`。
+  - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `height (float)`, `position (Literal["top", "bridge", "hollow"])`, `separate_layers_decimals`, `allow_search_surface_atom`, `inplace`, `use_substrate_mask ("auto"|True|False)`。
   - ↩️ 戻り値: 結合後 `ase.Atoms`。
+  - 📝 メモ: 複数の吸着分子を配置する場合は、最初に `set_substrate_mask_all(substrate)` でマスクを設定してください。これにより、2つ目以降の吸着分子配置時も、層検出と高さ基準が常に基板のみに基づいて決定されます。`use_substrate_mask="auto"` がデフォルトで、マスクが存在すれば自動的に使用されます。
 
 ### BuildSolvent.py（溶媒化の構築）
 - **ComponentSpec(name, concentration_mol_L, molecule)**（dataclass）

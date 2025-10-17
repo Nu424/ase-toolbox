@@ -6,7 +6,7 @@ ASEのAtomsオブジェクトから、特定の原子を探すための関数を
 - find_atom_by_index(): 原子を、インデックスでピンポイントに指定する
 - find_indices_by_symbol(): 指定した原子のインデックスを調べる
 - get_neighbors(): 隣接原子を探す
-- separate_layers(): (平面用)層別に分ける・層ごとのlistにする
+- separate_layers(): (平面用)層別に分ける・層ごとのlistにする (is_substrate マスク対応)
 - classify_surface_atoms(): (クラスター用)表面・内側を探す
 - find_central_atom(): 重心に最も近い原子を探す
 - get_appended_atom_indices(): くっつけた後の構造の中で、くっつけた原子のインデックスを知る
@@ -119,6 +119,7 @@ def separate_layers(
     *,
     decimals: int = 4,
     sort_by_z: bool = True,
+    use_substrate_mask: Literal["auto", True, False] = "auto",
 ) -> list[list[Atom]] | list[list[int]]:
     """
     (平面用)スラブ構造を層別に分離し、各層の原子をリストとして返す。
@@ -135,6 +136,11 @@ def separate_layers(
             デフォルトは4。層の判定精度に影響します。
         sort_by_z (bool, optional): z座標で層をソートするか。
             True: z座標昇順（下層から上層）、False: 検出順。デフォルトはTrue。
+        use_substrate_mask (Literal["auto", True, False], optional): 基板マスクの使用設定。
+            "auto": atoms.arrays に "is_substrate" が存在する場合、is_substrate==True の原子のみで層を検出。
+            True: 基板マスクを使用（存在しない場合は全原子）。
+            False: マスクを無視して全原子を対象。
+            デフォルトは "auto"。
 
     Returns:
         list[list[ase.Atom]] | list[list[int]]:
@@ -162,8 +168,23 @@ def separate_layers(
     if return_type not in ("atoms", "indices"):
         raise ValueError("return_type は 'atoms' または 'indices' を指定してください。")
 
+    # --- 基板マスクの適用判定 ---
+    should_use_mask = False
+    if use_substrate_mask == "auto":
+        should_use_mask = "is_substrate" in atoms.arrays
+    elif use_substrate_mask is True:
+        should_use_mask = "is_substrate" in atoms.arrays
+    # use_substrate_mask == False の場合は should_use_mask = False のまま
+
+    # --- 層検出対象の原子インデックスを決定 ---
+    if should_use_mask:
+        substrate_mask = atoms.arrays["is_substrate"].astype(bool)
+        target_indices = np.where(substrate_mask)[0]
+    else:
+        target_indices = np.arange(len(atoms))
+
     # --- z座標を丸めて一意な層を特定 ---
-    z_coords = atoms.positions[:, 2]
+    z_coords = atoms.positions[target_indices, 2]
     rounded_z = np.round(z_coords, decimals=decimals)
     unique_z_values = np.unique(rounded_z)
 
@@ -177,7 +198,8 @@ def separate_layers(
     for z_value in unique_z_values:
         # 該当するz座標を持つ原子のインデックスを取得
         layer_mask = np.isclose(rounded_z, z_value, atol=10 ** (-decimals - 1))
-        layer_indices = np.where(layer_mask)[0].tolist()
+        # target_indices の中でのマスク位置を、元の atoms でのインデックスに変換
+        layer_indices = target_indices[layer_mask].tolist()
         layers_indices.append(layer_indices)
 
     # --- 出力形式に応じて返却 ---

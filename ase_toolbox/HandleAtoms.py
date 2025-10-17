@@ -3,6 +3,7 @@
 ASEのAtomsオブジェクトを操作・処理するための関数をまとめたファイル
 
 ## 関数一覧
+- set_substrate_mask_all(): 全原子に基板マスクを設定する
 - move_atoms(): 原子を指定方向に指定距離だけ移動する
 - fix_layers(): (平面用)層を固定する
 - substitute_elements(): 原子を置き換える
@@ -13,7 +14,6 @@ ASEのAtomsオブジェクトを操作・処理するための関数をまとめ
 
 from typing import Literal, Sequence, Mapping, Optional
 from ase import Atoms, Atom
-from ase.build import add_adsorbate
 from ase.constraints import FixAtoms
 import numpy as np
 from numpy.typing import NDArray
@@ -24,6 +24,41 @@ from .FindAtoms import (
     get_neighbors,
 )
 from .util import ConditionalLogger, ensure_logger, resolve_target_indices
+
+
+# 全原子に基板マスクを設定する
+def set_substrate_mask_all(
+    atoms: Atoms,
+    *,
+    is_substrate: bool = True,
+    inplace: bool = True,
+) -> Atoms:
+    """
+    全原子に is_substrate マスクを設定する。
+
+    吸着分子を配置する前の基板構造に対して、全原子を「基板」としてマークするために使用します。
+    これにより、後続の吸着分子配置時に層検出や高さ基準が基板のみに基づいて行われます。
+
+    Args:
+        atoms (ase.Atoms): マスクを設定する原子構造。
+        is_substrate (bool, optional): 設定する値。True で基板、False で非基板。デフォルトは True。
+        inplace (bool, optional): True の場合は atoms を直接変更。
+            False の場合はコピーを作成して返します。デフォルトは True。
+
+    Returns:
+        ase.Atoms: マスクが設定された原子構造。inplace=True の場合は引数 atoms 自身が返されます。
+
+    Examples:
+        >>> from ase.build import bulk, surface
+        >>> slab = surface(bulk('Cu'), (1,1,1), layers=3)
+        >>> # 基板として初期化
+        >>> slab = set_substrate_mask_all(slab, is_substrate=True)
+        >>> # この後、place_adsorbate_on_surface を複数回呼んでも、層検出は常に基板のみで行われる
+    """
+    target = atoms if inplace else atoms.copy()
+    mask = np.full(len(target), is_substrate, dtype=bool)
+    target.set_array("is_substrate", mask)
+    return target
 
 
 # 手動で微妙に動かす
@@ -113,6 +148,7 @@ def fix_layers(
     decimals: int = 4,
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = False,
+    use_substrate_mask: Literal["auto", True, False] = "auto",
 ) -> Atoms:
     """
     指定された数の下層を固定する制約を追加する。
@@ -131,6 +167,11 @@ def fix_layers(
         logger (Optional[ConditionalLogger], optional): ログ出力制御。
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
+        use_substrate_mask (Literal["auto", True, False], optional): 基板マスクの使用設定。
+            "auto": atoms.arrays に "is_substrate" が存在する場合、基板原子のみで層を検出。
+            True: 基板マスクを使用（存在しない場合は全原子）。
+            False: マスクを無視して全原子を対象。
+            デフォルトは "auto"。
 
     Returns:
         ase.Atoms: 制約が適用された原子構造。
@@ -162,6 +203,7 @@ def fix_layers(
         return_type="indices",
         decimals=decimals,
         sort_by_z=True,  # 下層から上層の順序
+        use_substrate_mask=use_substrate_mask,
     )
 
     total_layers = len(layers_indices)
@@ -587,6 +629,12 @@ def place_adsorbate_along_normal(
     # --- 基板と吸着分子を結合 ---
     combined = substrate + adsorbate_copy
 
+    # --- 基板マスクの拡張（存在する場合） ---
+    if "is_substrate" in substrate.arrays:
+        old_mask = substrate.arrays["is_substrate"].astype(bool)
+        new_mask = np.concatenate([old_mask, np.zeros(len(adsorbate_copy), dtype=bool)])
+        combined.set_array("is_substrate", new_mask)
+
     return combined
 
 
@@ -660,6 +708,7 @@ def place_adsorbate_on_surface(
     separate_layers_decimals: int = 4,
     allow_search_surface_atom: bool = True,
     inplace: bool = False,
+    use_substrate_mask: Literal["auto", True, False] = "auto",
 ) -> Atoms:
     """
     指定した構造表面に、吸着分子を配置する。add_adsorbate()の高性能なラッパー関数。
@@ -674,6 +723,13 @@ def place_adsorbate_on_surface(
         separate_layers_decimals (int): 層を分割する際の小数点以下の桁数。
         allow_search_surface_atom (bool): target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
         inplace (bool): もとの構造を置き換えるかどうか。
+        use_substrate_mask (Literal["auto", True, False], optional): 基板マスクの使用設定。
+            "auto": substrate.arrays に "is_substrate" が存在する場合、基板原子のみで層検出と高さ基準を決定。
+            True: 基板マスクを使用（存在しない場合は全原子）。
+            False: マスクを無視して全原子を対象。
+            デフォルトは "auto"。複数の吸着分子を配置する場合、set_substrate_mask_all() で
+            事前に基板マスクを設定し、このパラメータを "auto" または True にすることで、
+            既存の吸着分子の影響を受けずに正しく配置できます。
 
     Returns:
         ase.Atoms: ベースと配置済み吸着分子を結合した構造。
@@ -699,10 +755,13 @@ def place_adsorbate_on_surface(
     else:
         raise TypeError("target_atom は int または ase.Atom または None を指定してください。")
 
-    # ---表面原子を取得する
-    layers: list[list[Atom]] = separate_layers(substrate,
-                                               decimals=separate_layers_decimals,
-                                               return_type="atoms")
+    # ---表面原子を取得する（基板マスク適用）
+    layers: list[list[Atom]] = separate_layers(
+        substrate,
+        decimals=separate_layers_decimals,
+        return_type="atoms",
+        use_substrate_mask=use_substrate_mask,
+    )
     top_layer: list[Atom] = layers[-1]
     top_layer_indices: list[int] = [atom.index for atom in top_layer]
 
@@ -773,14 +832,35 @@ def place_adsorbate_on_surface(
     else:
         raise ValueError("position は 'top'、'bridge'、'hollow' を指定してください。")
 
-    # ---吸着させる
-    if inplace:
-        new_substrate = substrate
-    else:
-        new_substrate = substrate.copy()
+    # ---基板上面のz座標を計算（基板のみから）
+    z_top = max(a.position[2] for a in top_layer)
 
-    add_adsorbate(new_substrate, adsorbate,
-                  height=height, position=position_xy)
+    # ---出力構造の準備
+    if inplace:
+        out = substrate
+    else:
+        out = substrate.copy()
+
+    # ---吸着分子を手動配置（高さ基準を基板のみに依存）
+    ads = adsorbate.copy()
+    
+    # XY位置合わせ: 吸着分子の重心XYを目標XY位置に移動
+    com_xy = ads.get_center_of_mass()[:2]
+    shift_xy = position_xy - com_xy
+    ads.positions[:, :2] += shift_xy
+    
+    # Z位置合わせ: 吸着分子の最下点が z_top + height になるように移動
+    z_min = ads.positions[:, 2].min()
+    ads.positions[:, 2] += (z_top + height - z_min)
+
+    # ---構造を結合
+    out = out + ads
+
+    # ---基板マスクの拡張（存在する場合）
+    if "is_substrate" in substrate.arrays:
+        old_mask = substrate.arrays["is_substrate"].astype(bool)
+        new_mask = np.concatenate([old_mask, np.zeros(len(ads), dtype=bool)])
+        out.set_array("is_substrate", new_mask)
 
     # ---返却する
-    return new_substrate
+    return out
