@@ -3,6 +3,7 @@
 ASEのAtomsオブジェクトを操作・処理するための関数をまとめたファイル
 
 ## 関数一覧
+- smiles_to_atoms(): SMILES文字列からASE Atomsオブジェクトを生成する
 - set_substrate_mask_all(): 全原子に基板マスクを設定する
 - move_atoms(): 原子を指定方向に指定距離だけ移動する
 - fix_layers(): (平面用)層を固定する
@@ -66,6 +67,136 @@ INTERNAL_LATTICE_MAP: dict[str, float] = {
 # 体積混合法の注意喚起用：立方系ではない代表元素（hcp）と bcc/hcp の集合
 _NON_CUBIC_ELEMENTS: set[str] = {"Mg", "Ti", "Zn", "Zr", "Co", "Cd", "Be", "Ru", "Os", "Re"}
 _BCC_ELEMENTS: set[str] = {"Fe", "Cr", "W", "Mo", "V", "Nb", "Ta", "Ba"}
+
+
+# SMILES文字列からASE Atomsオブジェクトを生成する
+def smiles_to_atoms(
+    smiles: str,
+    *,
+    optimize: Literal["UFF", "MMFF"] | None = "UFF",
+    random_seed: int | None = None,
+) -> Atoms:
+    """
+    SMILES文字列からASE Atomsオブジェクトを生成する。
+
+    RDKitを使用してSMILES文字列を3D構造に変換します。
+    ETKDG法で3D座標を埋め込み、オプションで力場最適化を実行します。
+
+    Args:
+        smiles (str): SMILES文字列（例: "CCO", "c1ccccc1"）。
+        optimize (Literal["UFF", "MMFF"] | None, optional): 力場最適化の種類。
+            "UFF": Universal Force Field で最適化。
+            "MMFF": Merck Molecular Force Field で最適化。
+            None: 最適化なし（ETKDG埋め込みのみ）。
+            デフォルトは "UFF"。
+        random_seed (int | None, optional): 3D座標埋め込み時の乱数シード。
+            Noneの場合はランダム。デフォルトはNone。
+
+    Returns:
+        ase.Atoms: 生成された分子構造。単位はÅ。
+
+    Raises:
+        ImportError: RDKitがインストールされていない場合。
+        ValueError: SMILES文字列が不正、3D座標埋め込みに失敗、または
+                   最適化に失敗した場合。
+
+    Examples:
+        >>> # エタノールの生成
+        >>> ethanol = smiles_to_atoms("CCO")
+        >>> print(f"原子数: {len(ethanol)}")
+
+        >>> # ベンゼンの生成（最適化なし）
+        >>> benzene = smiles_to_atoms("c1ccccc1", optimize=None)
+
+        >>> # 再現性のある生成
+        >>> mol = smiles_to_atoms("CC(C)O", random_seed=42)
+
+    Note:
+        - この関数はRDKitに依存します。未導入の場合は明確なエラーメッセージを表示します。
+        - 3D座標はETKDGv3アルゴリズムで生成されます。
+        - 水素原子は自動的に付加されます。
+    """
+    # --- RDKitの遅延import ---
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError as e:
+        raise ImportError(
+            "RDKitがインストールされていません。\n"
+            "以下のコマンドでインストールしてください:\n"
+            "  pip install rdkit\n"
+            "または\n"
+            "  conda install -c conda-forge rdkit"
+        ) from e
+
+    # --- SMILES文字列から分子オブジェクトを作成 ---
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(
+            f"SMILES文字列の解析に失敗しました: '{smiles}'\n"
+            "SMILES文字列が正しいか確認してください。"
+        )
+
+    # --- 水素原子を付加 ---
+    mol = Chem.AddHs(mol)
+
+    # --- 3D座標を埋め込む（ETKDG法） ---
+    params = AllChem.ETKDGv3()
+    if random_seed is not None:
+        params.randomSeed = random_seed
+
+    embed_result = AllChem.EmbedMolecule(mol, params)
+    if embed_result == -1:
+        raise ValueError(
+            f"3D座標の埋め込みに失敗しました: '{smiles}'\n"
+            "分子が大きすぎる、または構造的に不安定な可能性があります。"
+        )
+
+    # --- 力場最適化（オプション） ---
+    if optimize == "UFF":
+        converged = AllChem.UFFOptimizeMolecule(mol)
+        if converged != 0:
+            warnings.warn(
+                f"UFF最適化が完全に収束しませんでした（収束コード: {converged}）。\n"
+                "結果の精度が低い可能性があります。",
+                RuntimeWarning,
+            )
+    elif optimize == "MMFF":
+        # MMFFプロパティの取得
+        props = AllChem.MMFFGetMoleculeProperties(mol)
+        if props is None:
+            raise ValueError(
+                f"MMFF力場のパラメータ取得に失敗しました: '{smiles}'\n"
+                "この分子にはMMFFを適用できません。optimize='UFF'を試してください。"
+            )
+        converged = AllChem.MMFFOptimizeMolecule(mol, mmffVariant="MMFF94")
+        if converged != 0:
+            warnings.warn(
+                f"MMFF最適化が完全に収束しませんでした（収束コード: {converged}）。\n"
+                "結果の精度が低い可能性があります。",
+                RuntimeWarning,
+            )
+    elif optimize is not None:
+        raise ValueError(
+            f"optimizeは 'UFF'、'MMFF'、または None を指定してください。指定値: {optimize}"
+        )
+
+    # --- RDKit分子からASE Atomsへの変換 ---
+    symbols = []
+    positions = []
+    conf = mol.GetConformer()
+
+    for atom in mol.GetAtoms():
+        # 元素記号を取得
+        symbols.append(atom.GetSymbol())
+        # 3D座標を取得（単位: Å）
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        positions.append([pos.x, pos.y, pos.z])
+
+    # --- ASE Atomsオブジェクトを作成 ---
+    ase_atoms = Atoms(symbols=symbols, positions=positions)
+
+    return ase_atoms
 
 
 # 元素の格子定数を取得
@@ -870,6 +1001,9 @@ def place_adsorbate_on_surface(
     height: float,
     position: Literal["top", "bridge", "hollow"],
     *,
+    rotation_deg: tuple[float, float, float] | None = None,
+    align_vector: Sequence[float] | None = None,
+    rotate_about: Literal["com", "cog"] = "com",
     separate_layers_decimals: int = 4,
     allow_search_surface_atom: bool = True,
     inplace: bool = False,
@@ -885,6 +1019,16 @@ def place_adsorbate_on_surface(
             インデックスまたはAtomオブジェクトを指定可能。Noneの場合は重心に最も近い原子を探す。
         height (float): 吸着分子の高さ [Å]。
         position (Literal["top", "bridge", "hollow"]): 吸着分子の位置。
+        rotation_deg (tuple[float, float, float] | None, optional): 吸着分子の回転角度 [度]。
+            (rx, ry, rz) の形式で、X軸→Y軸→Z軸の順にオイラー角回転を適用します。
+            Noneの場合は回転なし。デフォルトはNone。
+        align_vector (Sequence[float] | None, optional): 吸着分子を整列させる方向ベクトル。
+            指定した場合、このベクトルをグローバル +z 軸に整列させます。
+            Noneの場合は整列なし。デフォルトはNone。
+        rotate_about (Literal["com", "cog"], optional): 回転の中心。
+            "com": 質量中心（Center of Mass）を中心に回転。
+            "cog": 幾何中心（Center of Geometry）を中心に回転。
+            デフォルトは "com"。
         separate_layers_decimals (int): 層を分割する際の小数点以下の桁数。
         allow_search_surface_atom (bool): target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
         inplace (bool): もとの構造を置き換えるかどうか。
@@ -904,8 +1048,13 @@ def place_adsorbate_on_surface(
         ValueError: target_atomが表面に存在しない場合、allow_search_surface_atomがFalseの場合。
         ValueError: 隣接原子が存在せず、bridgeまたはhollowの位置を決定できない場合。
         ValueError: 共通して隣接する原子が存在せず、hollowの位置を決定できない場合。
+        ValueError: align_vectorがゼロベクトルの場合、またはrotate_aboutが不正な値の場合。
         TypeError: target_atom の型が不正な場合。
         IndexError: 指定されたインデックスが範囲外の場合。
+
+    Note:
+        - 回転は配置前に適用されます（整列回転 → オイラー角回転 → 位置決定）。
+        - align_vectorとrotation_degは併用可能です。この場合、先にalign_vector整列、次にrotation_deg回転が適用されます。
     """
     # ---(準備)target_atomを、Atom|Noneにする
     if isinstance(target_atom, int):
@@ -1008,6 +1157,79 @@ def place_adsorbate_on_surface(
 
     # ---吸着分子を手動配置（高さ基準を基板のみに依存）
     ads = adsorbate.copy()
+    
+    # --- 回転処理の適用（配置前） ---
+    # 回転中心の決定
+    if rotate_about == "com":
+        rotation_center = ads.get_center_of_mass()
+    elif rotate_about == "cog":
+        rotation_center = ads.get_positions().mean(axis=0)
+    else:
+        raise ValueError(f"rotate_aboutは 'com' または 'cog' を指定してください。指定値: {rotate_about}")
+    
+    # 1. align_vector による整列回転
+    if align_vector is not None:
+        align_vec = np.array(align_vector, dtype=float)
+        if align_vec.shape != (3,):
+            raise ValueError(f"align_vectorは3次元ベクトルを指定してください。現在の形状: {align_vec.shape}")
+        if np.allclose(align_vec, 0):
+            raise ValueError("align_vectorはゼロベクトルにできません。")
+        
+        # align_vector を +z 軸に整列させる回転行列を計算
+        z_axis = np.array([0.0, 0.0, 1.0])
+        R_align = _compute_rotation_matrix(align_vec, z_axis)
+        
+        # 回転中心を基準に回転を適用
+        for atom in ads:
+            rel_pos = atom.position - rotation_center
+            rotated_pos = R_align @ rel_pos
+            atom.position = rotated_pos + rotation_center
+        
+        # 回転後の中心を再計算
+        if rotate_about == "com":
+            rotation_center = ads.get_center_of_mass()
+        else:
+            rotation_center = ads.get_positions().mean(axis=0)
+    
+    # 2. rotation_deg によるオイラー角回転（XYZ順）
+    if rotation_deg is not None:
+        if len(rotation_deg) != 3:
+            raise ValueError(f"rotation_degは3つの値 (rx, ry, rz) を指定してください。指定値: {rotation_deg}")
+        
+        rx_deg, ry_deg, rz_deg = rotation_deg
+        rx_rad = np.deg2rad(rx_deg)
+        ry_rad = np.deg2rad(ry_deg)
+        rz_rad = np.deg2rad(rz_deg)
+        
+        # X軸回りの回転行列
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(rx_rad), -np.sin(rx_rad)],
+            [0, np.sin(rx_rad), np.cos(rx_rad)]
+        ])
+        
+        # Y軸回りの回転行列
+        Ry = np.array([
+            [np.cos(ry_rad), 0, np.sin(ry_rad)],
+            [0, 1, 0],
+            [-np.sin(ry_rad), 0, np.cos(ry_rad)]
+        ])
+        
+        # Z軸回りの回転行列
+        Rz = np.array([
+            [np.cos(rz_rad), -np.sin(rz_rad), 0],
+            [np.sin(rz_rad), np.cos(rz_rad), 0],
+            [0, 0, 1]
+        ])
+        
+        # 合成回転行列（Z * Y * X の順）
+        R_euler = Rz @ Ry @ Rx
+        
+        # 回転中心を基準に回転を適用
+        for atom in ads:
+            rel_pos = atom.position - rotation_center
+            rotated_pos = R_euler @ rel_pos
+            atom.position = rotated_pos + rotation_center
     
     # XY位置合わせ: 吸着分子の重心XYを目標XY位置に移動
     com_xy = ads.get_center_of_mass()[:2]

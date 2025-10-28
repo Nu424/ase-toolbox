@@ -5,6 +5,7 @@ ASEのAtomsオブジェクトから、特定の原子を探すための関数を
 ## 関数一覧
 - find_atom_by_index(): 原子を、インデックスでピンポイントに指定する
 - find_indices_by_symbol(): 指定した原子のインデックスを調べる
+- filter_by_symbols(): 指定した元素記号の原子をフィルタリングする
 - get_neighbors(): 隣接原子を探す
 - separate_layers(): (平面用)層別に分ける・層ごとのlistにする (is_substrate マスク対応)
 - classify_surface_atoms(): (クラスター用)表面・内側を探す
@@ -54,6 +55,88 @@ def find_indices_by_symbol(atoms: Atoms, symbol: str):
     indices = [i for i, atom in enumerate(atoms) if atom.symbol == target_symbol]
 
     return indices
+
+
+# 指定した元素記号の原子をフィルタリングする
+def filter_by_symbols(
+    atoms: Atoms,
+    symbols: str | Sequence[str],
+    return_type: Literal["atoms", "indices"] = "atoms",
+) -> list[Atom] | list[int]:
+    """
+    指定した元素記号に一致する原子をフィルタリングして返す。
+
+    単一の元素記号または複数の元素記号を指定でき、該当する原子を
+    元の構造の順序を保ったまま抽出します。
+
+    Args:
+        atoms (ase.Atoms): フィルタリング対象の原子構造。
+        symbols (str | Sequence[str]): フィルタリングする元素記号。
+            単一の文字列（例: "O"）または文字列のシーケンス（例: ["Cu", "O"]）。
+            大文字小文字は自動的に正規化されます。
+        return_type (Literal["atoms", "indices"], optional): 返却形式。
+            "atoms": 原子オブジェクトのリストを返す（デフォルト）。
+            "indices": 原子インデックスのリストを返す。
+
+    Returns:
+        list[ase.Atom] | list[int]: フィルタリングされた原子のリスト。
+            return_type に応じて形式が変わります。
+            該当する原子がない場合は空リストを返します。
+
+    Raises:
+        ValueError: return_type が "atoms" または "indices" 以外の場合。
+        TypeError: symbols の型が不正な場合。
+
+    Examples:
+        >>> from ase.build import bulk, surface
+        >>> slab = surface(bulk('Cu'), (1,1,1), layers=3)
+        >>> # 全Cu原子を取得
+        >>> cu_atoms = filter_by_symbols(slab, "Cu", return_type="atoms")
+        >>> print(f"Cu原子数: {len(cu_atoms)}")
+
+        >>> # 複数元素でフィルタリング
+        >>> from ase import Atoms
+        >>> mixed = Atoms("CuOCuO", positions=[[0,0,0],[1,0,0],[2,0,0],[3,0,0]])
+        >>> cu_o_indices = filter_by_symbols(mixed, ["Cu", "O"], return_type="indices")
+        >>> print(cu_o_indices)  # [0, 1, 2, 3] (全原子)
+
+    Note:
+        - 元素記号の大文字小文字は自動的に正規化されます（例: "cu" → "Cu"）。
+        - 返されるリストは元の構造の順序を保持します。
+        - 複数の元素記号を指定した場合、いずれかに一致する原子が抽出されます。
+    """
+    # --- return_type の検証 ---
+    if return_type not in ("atoms", "indices"):
+        raise ValueError("return_type は 'atoms' または 'indices' を指定してください。")
+
+    # --- symbols の正規化 ---
+    if isinstance(symbols, str):
+        # 単一文字列の場合
+        target_symbols = {symbols.capitalize()}
+    elif isinstance(symbols, Sequence) and not isinstance(symbols, str):
+        # シーケンス（リスト、タプルなど）の場合
+        try:
+            target_symbols = {s.capitalize() for s in symbols}
+        except (AttributeError, TypeError) as e:
+            raise TypeError(
+                f"symbols の各要素は文字列である必要があります: {e}"
+            ) from e
+    else:
+        raise TypeError(
+            "symbols は str または Sequence[str] を指定してください。"
+        )
+
+    # --- フィルタリング処理 ---
+    filtered_indices: list[int] = []
+    for i, atom in enumerate(atoms):
+        if atom.symbol in target_symbols:
+            filtered_indices.append(i)
+
+    # --- 出力形式に応じて返す ---
+    if return_type == "atoms":
+        return [atoms[i] for i in filtered_indices]
+    else:  # return_type == "indices"
+        return filtered_indices
 
 
 # 隣接原子を探す

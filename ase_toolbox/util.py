@@ -255,3 +255,70 @@ def resolve_target_indices(
         )
 
     return target_indices
+
+
+def sanitize_atoms_for_xyz_write(atoms: Atoms) -> Atoms:
+    """
+    XYZ形式で安全に書き出すために、Atomsオブジェクトをクリーンアップする。
+
+    長さが不一致なper-atom配列や、シリアライズできない情報を除去し、
+    最小限の情報（元素記号、座標、セル、PBC）のみを保持した新しいAtomsオブジェクトを作成します。
+
+    Args:
+        atoms (ase.Atoms): クリーンアップ対象の原子構造。
+
+    Returns:
+        ase.Atoms: クリーンアップされた原子構造。以下の情報のみを保持：
+            - 元素記号（symbols）
+            - 座標（positions）
+            - セル（cell）
+            - 周期境界条件（pbc）
+            - タグ（tags、長さが一致する場合のみ）
+            - info辞書の単純型エントリ（str, int, float, bool のみ）
+
+    Examples:
+        >>> from ase import Atoms
+        >>> import numpy as np
+        >>> # 不一致な配列を持つ構造を作成（例：誤って設定）
+        >>> atoms = Atoms("H2O", positions=[[0,0,0],[1,0,0],[0,1,0]])
+        >>> # クリーンアップしてXYZ書き出し
+        >>> clean_atoms = sanitize_atoms_for_xyz_write(atoms)
+        >>> from ase.io import write
+        >>> write("output.xyz", clean_atoms)
+
+    Note:
+        - この関数は元のAtomsオブジェクトを変更せず、新しいオブジェクトを返します。
+        - per-atom配列（arrays）で長さが原子数と一致しないものは除外されます。
+        - info辞書は単純な型（str, int, float, bool）のみが保存されます。
+        - 計算機（calculator）やその他の複雑なオブジェクトは保存されません。
+    """
+    n = len(atoms)
+
+    # --- 基本情報で新しいAtomsを作成 ---
+    clean = Atoms(
+        symbols=atoms.get_chemical_symbols(),
+        positions=atoms.get_positions(),
+        cell=atoms.get_cell(),
+        pbc=atoms.get_pbc(),
+    )
+
+    # --- タグの保存（長さが一致する場合のみ） ---
+    try:
+        tags = atoms.get_tags()
+        if tags is not None and len(tags) == n:
+            clean.set_tags(tags)
+    except Exception:
+        # タグの取得や設定に失敗した場合は無視
+        pass
+
+    # --- info辞書の単純型エントリのみを保存 ---
+    try:
+        if hasattr(atoms, "info") and isinstance(atoms.info, dict):
+            for k, v in atoms.info.items():
+                if isinstance(v, (str, int, float, bool)):
+                    clean.info[k] = v
+    except Exception:
+        # info処理に失敗した場合は無視
+        pass
+
+    return clean
