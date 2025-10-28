@@ -17,6 +17,8 @@ from ase import Atoms, Atom
 from ase.constraints import FixAtoms
 import numpy as np
 from numpy.typing import NDArray
+import re
+import warnings
 from .FindAtoms import (
     find_central_atom,
     separate_layers,
@@ -24,6 +26,169 @@ from .FindAtoms import (
     get_neighbors,
 )
 from .util import ConditionalLogger, ensure_logger, resolve_target_indices
+
+
+# 例外クラス
+class InvalidElementSymbolError(ValueError):
+    """元素記号が不正な場合に投げる例外。"""
+
+
+class LatticeConstantNotFoundError(KeyError):
+    """格子定数が見つからない場合に投げる例外。"""
+
+
+class CompositionSumError(ValueError):
+    """組成の合計が1にならない等の不整合に対して投げる例外。"""
+
+
+# 内部デフォルトの格子定数マップ（代表値, 単位: Å）
+# 注: 室温代表値/相依存。実使用ではユーザが上書きしてください。
+INTERNAL_LATTICE_MAP: dict[str, float] = {
+    # fcc
+    "Al": 4.049,
+    "Cu": 3.615,
+    "Au": 4.078,
+    "Ag": 4.086,
+    "Ni": 3.524,
+    "Pd": 3.890,
+    "Pt": 3.923,
+    # bcc（立方）
+    "Fe": 2.866,
+    "V": 3.027,
+    "Nb": 3.300,
+    "Mo": 3.147,
+    "W": 3.165,
+    # hcp（a格）
+    "Mg": 3.209,
+    "Ti": 2.951,
+}
+
+# 体積混合法の注意喚起用：立方系ではない代表元素（hcp）と bcc/hcp の集合
+_NON_CUBIC_ELEMENTS: set[str] = {"Mg", "Ti", "Zn", "Zr", "Co", "Cd", "Be", "Ru", "Os", "Re"}
+_BCC_ELEMENTS: set[str] = {"Fe", "Cr", "W", "Mo", "V", "Nb", "Ta", "Ba"}
+
+
+# 元素の格子定数を取得
+def _get_element_lattice_constant(symbol: str, user_map: dict[str, float] | None = None) -> float:
+    """
+    元素の格子定数[a]（Å）を取得する。優先順は user_map > INTERNAL_LATTICE_MAP。
+
+    Args:
+        symbol: 元素記号（例: 'Cu'）。大文字小文字は自動正規化。
+        user_map: ユーザ提供の格子定数マップ。キーは元素記号、値は格子定数[Å]。
+
+    Returns:
+        float: 格子定数[Å]。
+
+    Raises:
+        InvalidElementSymbolError: 元素記号が不正な形式の場合。
+        LatticeConstantNotFoundError: 対象元素の格子定数が見つからない場合。
+    """
+    if not isinstance(symbol, str):
+        raise InvalidElementSymbolError("元素記号 symbol は str を指定してください。")
+
+    sym = symbol.capitalize()
+    if re.fullmatch(r"^[A-Z][a-z]?$", sym) is None:
+        raise InvalidElementSymbolError(f"元素記号の形式が不正です: {symbol}")
+
+    # user_map を優先
+    if user_map is not None:
+        # キーの大小統一のために正規化
+        normalized_user_map = {k.capitalize(): float(v) for k, v in user_map.items()}
+        if sym in normalized_user_map:
+            return float(normalized_user_map[sym])
+
+    if sym in INTERNAL_LATTICE_MAP:
+        return float(INTERNAL_LATTICE_MAP[sym])
+
+    raise LatticeConstantNotFoundError(
+        f"元素 '{sym}' の格子定数が見つかりません。user_map に追加してください。"
+    )
+
+
+# 組成から混合格子定数を計算
+def mix_lattice_constant(
+    composition: dict[str, float],
+    lattice_map: dict[str, float] | None = None,
+    method: Literal["vegard", "volume"] = "vegard",
+    *,
+    tol: float = 1e-6,
+    return_detail: bool = False,
+) -> float | tuple[float, dict]:
+    """
+    組成に基づいて混合格子定数 a を計算する。
+
+    - vegard: a = Σ x_i a_i
+    - volume: a = (Σ x_i a_i^3)^(1/3)  （立方晶を想定）
+
+    Args:
+        composition: {元素記号: 比率} の辞書。比率の合計はおよそ1。
+        lattice_map: ユーザ提供の格子定数マップ。
+        method: 'vegard'（線形）または 'volume'（体積基準）。
+        tol: 合計1.0 の許容誤差。
+        return_detail: True の場合、詳細情報の辞書も返す。
+
+    Returns:
+        float | tuple[float, dict]: 混合格子定数（Å）。return_detail=True の場合は (a, detail)。
+
+    Raises:
+        CompositionSumError: 比率合計が1から外れる、負値/ゼロが含まれる等。
+        InvalidElementSymbolError: 不正な元素記号。
+        LatticeConstantNotFoundError: 格子定数未定義の元素を含む場合。
+        NotImplementedError: 未対応の method を指定した場合。
+    """
+    if not isinstance(composition, dict) or len(composition) == 0:
+        raise CompositionSumError("composition は非空の dict[str, float] を指定してください。")
+
+    # 検証と正規化
+    symbols: list[str] = []
+    fractions: list[float] = []
+    for k, v in composition.items():
+        sym = k.capitalize()
+        if re.fullmatch(r"^[A-Z][a-z]?$", sym) is None:
+            raise InvalidElementSymbolError(f"元素記号の形式が不正です: {k}")
+        f = float(v)
+        if f <= 0:
+            raise CompositionSumError(f"組成比は正の値である必要があります: {k}={v}")
+        symbols.append(sym)
+        fractions.append(f)
+
+    total = float(np.sum(fractions))
+    if not np.isclose(total, 1.0, atol=tol):
+        raise CompositionSumError(f"組成の合計が1ではありません（現在: {total:.6f}）。")
+
+    # a_i の収集
+    a_map: dict[str, float] = {}
+    for sym in symbols:
+        a_map[sym] = _get_element_lattice_constant(sym, user_map=lattice_map)
+
+    # 計算
+    x = np.array(fractions, dtype=float)
+    a_list = np.array([a_map[sym] for sym in symbols], dtype=float)
+
+    if method == "vegard":
+        a_mixed = float(np.dot(x, a_list))
+    elif method == "volume":
+        # 注意喚起（立方晶想定）
+        if any((s in _NON_CUBIC_ELEMENTS) for s in symbols) or any((s in _BCC_ELEMENTS) for s in symbols):
+            warnings.warn(
+                "method='volume' は立方晶を仮定しています。bcc/hcp を含む系では注意してください。",
+                RuntimeWarning,
+            )
+        a_mixed = float(np.power(np.dot(x, np.power(a_list, 3.0)), 1.0 / 3.0))
+    else:
+        raise NotImplementedError(f"未対応の method です: {method}")
+
+    if not return_detail:
+        return a_mixed
+
+    detail = {
+        "method": method,
+        "composition": {s: float(f) for s, f in zip(symbols, fractions)},
+        "constants": {s: float(a_map[s]) for s in symbols},
+        "a_mixed": float(a_mixed),
+    }
+    return a_mixed, detail
 
 
 # 全原子に基板マスクを設定する

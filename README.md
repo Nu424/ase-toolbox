@@ -152,6 +152,13 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - ↩️ 戻り値: 結合後 `ase.Atoms`。
   - 📝 メモ: 複数の吸着分子を配置する場合は、最初に `set_substrate_mask_all(substrate)` でマスクを設定してください。これにより、2つ目以降の吸着分子配置時も、層検出と高さ基準が常に基板のみに基づいて決定されます。`use_substrate_mask="auto"` がデフォルトで、マスクが存在すれば自動的に使用されます。
 
+- **mix_lattice_constant(composition, lattice_map=None, method="vegard", tol=1e-6, return_detail=False)**
+  - 🧩 何をする: 組成 `{symbol: fraction}` から混合格子定数 `a` を計算。
+  - 🗺️ 場面: `surface()` でスラブを作る前に `a` を決めたいとき（Vegard/体積混合）。
+  - 🔧 主な引数: `composition (dict[str,float])`, `lattice_map`, `method ("vegard"|"volume")`, `tol`, `return_detail`。
+  - ↩️ 戻り値: `float`（Å）。`return_detail=True` で `(a, detail_dict)`。
+  - 📝 メモ: 体積混合は立方晶想定。bcc/hcp を含む場合は注意喚起を出します。
+
 ### BuildSolvent.py（溶媒化の構築）
 - **ComponentSpec(name, concentration_mol_L, molecule)**（dataclass）
   - 🧩 何をする: 成分名・濃度（mol/L）・分子指定（SMILES/Atoms/ファイルパス）を保持。
