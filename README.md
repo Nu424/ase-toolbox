@@ -211,17 +211,45 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 📝 メモ: SMILES→3D には RDKit、分子配置には Packmol を利用。
 
 ### Calculation.py（エネルギー・NEB・熱化学）
-- データクラス: **CAEInput(structure, calc_mode)**, **CGFEInput(...)**, **LatticeConstant(a,b,c,alpha,beta,gamma)**
+- データクラス: **CAEInput(structure, calculator=None, energy_override=None, coefficient=1.0)**, **CAEOutput(...)**, **CGFEInput(...)**, **LatticeConstant(a,b,c,alpha,beta,gamma)**
 
-- **calculate_adsorption_energy(calculator_molecule, calculator_solid, adsorbed_structure_input, reactant_structures_input, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, copy_atoms=True)**
-  - 🧩 何をする: 吸着後構造と、反応物群をそれぞれ最適化→エネルギーから吸着エネルギーを返す。
+- **calculate_adsorption_energy(adsorbed_structure_input, reactant_structures_input, optimizer_cls=FIRELBFGS, opt_fmax=0.05, opt_maxsteps=3000, logger=None, enable_logging=True, copy_atoms=True) -> CAEOutput**
+  - 🧩 何をする: 吸着後構造と反応物群をそれぞれ最適化（またはエネルギーを直接指定）し、係数付きで吸着エネルギーを算出する。
   - 🗺️ 場面: 分子/固体の混在系での吸着評価（Matlantis計算を想定）。
   - 🔧 主な引数:
-    - `calculator_molecule / calculator_solid (Calculator)`: 分子/固体用計算機。
-    - `adsorbed_structure_input (CAEInput)`: 吸着後構造と計算モード。
-    - `reactant_structures_input (list[CAEInput])`: 反応物群。
+    - `adsorbed_structure_input (CAEInput)`: 吸着後構造。`calculator` または `energy_override` のいずれかを指定。
+    - `reactant_structures_input (list[CAEInput])`: 反応物群。各項目で `calculator` / `energy_override` / `coefficient` を個別指定可能。
     - `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `logger`, `enable_logging`, `copy_atoms`。
-  - ↩️ 戻り値: `float`（eV、負なら有利）。
+  - ↩️ 戻り値: `CAEOutput`。吸着エネルギー（`adsorption_energy`）に加え、最適化後構造や個別エネルギー、係数情報を保持。
+  - 📝 ヒント:
+    - `energy_override`: 既知のエネルギーを再利用する場合に指定（最適化をスキップ）。
+    - `coefficient`: 反応式係数を設定（例: 0.5×H2 を表現する場合は `coefficient=0.5`）。
+    - `CAEOutput` には `optimized_adsorbed`, `optimized_reactants`, `reactant_weighted_energies` などが含まれるため、後処理で利用しやすい。
+  - 💡 使用例:
+    ```python
+    from ase_toolbox.Calculation import CAEInput, calculate_adsorption_energy
+
+    adsorbed_input = CAEInput(structure=cu_co_adsorbed, calculator=calc_solid)
+    reactant_inputs = [
+        CAEInput(structure=cu_surface, calculator=calc_solid),
+        CAEInput(structure=co_molecule, calculator=calc_molecule, coefficient=0.5),
+        CAEInput(
+            structure=h2_reference,
+            energy_override=precomputed_e_h2,
+            coefficient=0.5,
+        ),
+    ]
+
+    result = calculate_adsorption_energy(
+        adsorbed_structure_input=adsorbed_input,
+        reactant_structures_input=reactant_inputs,
+        opt_fmax=0.05,
+        opt_maxsteps=3000,
+        enable_logging=True,
+    )
+
+    print(f"吸着エネルギー: {result.adsorption_energy:.3f} eV")
+    ```
 
 - **analyze_composition(atoms)** / **generate_reference_structure(element, crystal_structure="auto", lattice_parameter=None, ...)**
   - 🧩 何をする: 元素組成の辞書作成 / 純元素参照構造（fcc/bcc/hcp自動判別も可）の生成。
@@ -272,6 +300,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🧩 何をする: 構造最適化を実行し、最終エネルギーを返す（ログ込み）。
   - 🔧 主な引数: `atoms`, `calculator`, `optimizer_cls`, `fmax`, `maxsteps`, `label`, `logger`, `copy_atoms`。
   - ↩️ 戻り値: `float`（eV）。
+  - 📝 メモ: 原子数が1の場合は最適化しても常に0 eVとなるため、警告ログが出力される。
 - **resolve_target_indices(base_atoms, target)**
   - 🧩 何をする: 多様なターゲット指定（int/Atom/Atoms/list）をインデックス配列に正規化。
   - 🔧 主な引数: `base_atoms (ase.Atoms)`, `target (様々な型に対応)`。
