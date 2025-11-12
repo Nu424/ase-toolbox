@@ -46,15 +46,53 @@ from .util import ConditionalLogger, ensure_logger, optimize_and_get_energy
 # ----------
 @dataclass
 class CAEInput:
-    # calculate_adsorption_energy()で使用する入力を、構造的に扱うためのクラス。
+    """
+    calculate_adsorption_energy()で使用する入力を構造化するデータクラス。
+
+    Attributes:
+        structure: 計算対象となる原子構造。
+        calculator: 構造最適化とエネルギー計算に使用するCalculator。
+            energy_overrideが未指定の場合は必須。
+        energy_override: エネルギーを直接指定する場合の値[eV]。
+            指定時は構造最適化をスキップし、calculatorは不要。
+        coefficient: 反応式における係数。エネルギーにこの値を掛けて合計する。
+    """
     structure: Atoms
-    calc_mode: Literal["molecule", "solid"]
+    calculator: Calculator | None = None
+    energy_override: float | None = None
+    coefficient: float = 1.0
+
+
+@dataclass
+class CAEOutput:
+    """
+    calculate_adsorption_energy()の結果をまとめたデータクラス。
+
+    Attributes:
+        adsorption_energy: 計算された吸着エネルギー[eV]。
+        optimized_adsorbed: 吸着後構造の最適化後Atoms。
+        optimized_reactants: 各反応物の最適化後Atoms。
+        e_adsorbed: 吸着後構造のエネルギー[eV]。
+        reactant_energies: 反応物エネルギー（係数適用前）[eV]。
+        reactant_coefficients: 反応物ごとの係数。
+        reactant_weighted_energies: 反応物エネルギー（係数適用後）[eV]。
+        e_reactants_total: 反応物エネルギーの合計（係数適用前）[eV]。
+        e_reactants_weighted_total: 反応物エネルギーの合計（係数適用後）[eV]。
+    """
+
+    adsorption_energy: float
+    optimized_adsorbed: Atoms
+    optimized_reactants: list[Atoms]
+    e_adsorbed: float
+    reactant_energies: list[float]
+    reactant_coefficients: list[float]
+    reactant_weighted_energies: list[float]
+    e_reactants_total: float
+    e_reactants_weighted_total: float
 
 
 # 吸着エネルギーを計算する
 def calculate_adsorption_energy(
-    calculator_molecule: Calculator,
-    calculator_solid: Calculator,
     adsorbed_structure_input: CAEInput,
     reactant_structures_input: list[CAEInput],
     *,
@@ -64,22 +102,19 @@ def calculate_adsorption_energy(
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
     copy_atoms: bool = True,
-) -> float:
+) -> CAEOutput:
     """
     吸着エネルギーを計算する。
 
     指定された吸着後構造と吸着前構造群から、構造最適化とエネルギー計算を行い、
-    吸着エネルギー E_ads = E(吸着後) - Σ[E(吸着前)] を算出します。
+    吸着エネルギー E_ads = E(吸着後) - Σ[係数 × E(吸着前)] を算出します。
 
     Args:
-        calculator_molecule (ase.calculators.calculator.Calculator): 分子用計算機。
-            一般的に EstimatorCalcMode.MOLECULE を使用。
-        calculator_solid (ase.calculators.calculator.Calculator): 固体用計算機。
-            一般的に EstimatorCalcMode.CRYSTAL_U0 を使用。
-            なお、それぞれ計算機を指定できるが、実際の計算の際には、1種類の計算機を使用するのがよい。計算機ごとにバイアスが異なるため。
         adsorbed_structure_input (CAEInput): 吸着後の構造（例: Cu-CO複合体）。
+            `CAEInput.calculator` もしくは `CAEInput.energy_override` の指定が必要。
         reactant_structures_input (list[CAEInput]): 吸着前の構造群。
-            例: [Cu表面, CO分子] のリスト。各構造は独立に最適化される。
+            例: [Cu表面, 0.5×H2分子] のリスト。
+            各構造について `calculator` または `energy_override` のいずれかを指定する。
         optimizer_cls (type[Optimizer], optional): 構造最適化アルゴリズムのクラス。
             デフォルトは FIRELBFGS。
         opt_fmax (float, optional): 構造最適化の力の収束閾値[eV/Å]。デフォルトは 0.05。
@@ -90,10 +125,12 @@ def calculate_adsorption_energy(
         copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
 
     Returns:
-        float: 吸着エネルギー[eV]。負の値は吸着が熱力学的に有利であることを示す。
+        CAEOutput: 計算結果をまとめたデータクラス。
+            吸着エネルギー、最適化後（または指定構造）のAtoms、各種エネルギー情報を含む。
 
     Raises:
         ValueError: reactant_structures_input が空の場合。
+            または calculator と energy_override が共に未指定の場合。
         TypeError: 引数の型が不正な場合。
     """
 
@@ -107,6 +144,21 @@ def calculate_adsorption_energy(
             "reactant_structures は少なくとも1つの構造を含む必要があります。"
         )
 
+    # --- 入力検証 ---
+    def _validate_input(input_data: CAEInput, label: str) -> None:
+        if input_data.energy_override is None and input_data.calculator is None:
+            raise ValueError(
+                f"{label} には calculator もしくは energy_override の指定が必要です。"
+            )
+
+    _validate_input(adsorbed_structure_input, "吸着後構造")
+
+    for idx, reactant_input in enumerate(reactant_structures_input, start=1):
+        _validate_input(reactant_input, f"反応物{idx}")
+
+    def _prepare_structure(atoms: Atoms) -> Atoms:
+        return atoms.copy() if copy_atoms else atoms
+
     # --- メイン計算開始ログ ---
     logger.info("=" * 80)
     logger.info("吸着エネルギー計算開始")
@@ -114,56 +166,84 @@ def calculate_adsorption_energy(
         f"吸着後構造: {adsorbed_structure_input.structure.symbols} ({len(adsorbed_structure_input.structure)} 原子)"
     )
     logger.info(f"反応物構造数: {n_reactants}")
-    for i, atoms in enumerate(reactant_structures_input):
+    for i, reactant_input in enumerate(reactant_structures_input):
         logger.info(
-            f"  反応物{i+1}: {atoms.structure.symbols} ({len(atoms.structure)} 原子)"
+            f"  反応物{i+1}: {reactant_input.structure.symbols} ({len(reactant_input.structure)} 原子) "
+            f"係数={reactant_input.coefficient}"
         )
-    logger.info("計算モード設定:")
-    logger.info(f"  吸着後: {adsorbed_structure_input.calc_mode}")
-    for i, reactant in enumerate(reactant_structures_input):
-        logger.info(f"  反応物{i+1}: {reactant.calc_mode}")
 
     # --- 1. 吸着後構造のエネルギー計算 ---
-    adsorbed_calc = (
-        calculator_molecule
-        if adsorbed_structure_input.calc_mode == "molecule"
-        else calculator_solid
-    )
-    e_adsorbed = optimize_and_get_energy(
-        atoms=adsorbed_structure_input.structure,
-        calculator=adsorbed_calc,
-        optimizer_cls=optimizer_cls,
-        fmax=opt_fmax,
-        maxsteps=opt_maxsteps,
-        label="吸着後構造",
-        logger=logger,
-        copy_atoms=copy_atoms,
-    )
-
-    # --- 2. 各反応物構造のエネルギー計算 ---
-    reactant_energies: list[float] = []
-    for i, reactant_input in enumerate(reactant_structures_input):
-        label = f"反応物{i+1}"
-        reactant_calc = (
-            calculator_molecule
-            if reactant_input.calc_mode == "molecule"
-            else calculator_solid
+    if adsorbed_structure_input.energy_override is not None:
+        # ---エネルギーを直接指定する場合
+        e_adsorbed = float(adsorbed_structure_input.energy_override)
+        optimized_adsorbed = _prepare_structure(adsorbed_structure_input.structure)
+        logger.info(
+            f"吸着後構造: energy_override = {e_adsorbed:.6f} eV を使用（最適化は実行しません）"
         )
-        e_reactant = optimize_and_get_energy(
-            atoms=reactant_input.structure,
-            calculator=reactant_calc,
+    else:
+        # ---構造最適化を行う場合
+        if adsorbed_structure_input.calculator is None:
+            raise ValueError("吸着後構造にcalculatorが指定されていません。")
+        optimized_adsorbed = _prepare_structure(adsorbed_structure_input.structure)
+        logger.info(
+            f"吸着後構造: calculator = {type(adsorbed_structure_input.calculator).__name__} を使用して最適化を実行"
+        )
+        e_adsorbed = optimize_and_get_energy(
+            atoms=optimized_adsorbed,
+            calculator=adsorbed_structure_input.calculator,
             optimizer_cls=optimizer_cls,
             fmax=opt_fmax,
             maxsteps=opt_maxsteps,
-            label=label,
+            label="吸着後構造",
             logger=logger,
-            copy_atoms=copy_atoms,
+            copy_atoms=False,
         )
+
+    # --- 2. 各反応物構造のエネルギー計算 ---
+    reactant_energies: list[float] = []
+    reactant_coefficients: list[float] = []
+    reactant_weighted_energies: list[float] = []
+    optimized_reactants: list[Atoms] = []
+    for i, reactant_input in enumerate(reactant_structures_input):
+        label = f"反応物{i+1}"
+        coeff = float(reactant_input.coefficient)
+
+        if reactant_input.energy_override is not None:
+            # ---エネルギーを直接指定する場合
+            e_reactant = float(reactant_input.energy_override)
+            optimized_reactant = _prepare_structure(reactant_input.structure)
+            logger.info(
+                f"{label}: energy_override = {e_reactant:.6f} eV を使用（係数={coeff}、最適化は実行しません）"
+            )
+        else:
+            # ---構造最適化を行う場合
+            if reactant_input.calculator is None:
+                raise ValueError(f"{label} にcalculatorが指定されていません。")
+            optimized_reactant = _prepare_structure(reactant_input.structure)
+            logger.info(
+                f"{label}: calculator = {type(reactant_input.calculator).__name__} を使用して最適化を実行（係数={coeff}）"
+            )
+            e_reactant = optimize_and_get_energy(
+                atoms=optimized_reactant,
+                calculator=reactant_input.calculator,
+                optimizer_cls=optimizer_cls,
+                fmax=opt_fmax,
+                maxsteps=opt_maxsteps,
+                label=label,
+                logger=logger,
+                copy_atoms=False,
+            )
+
         reactant_energies.append(e_reactant)
+        reactant_coefficients.append(coeff)
+        weighted_energy = e_reactant * coeff
+        reactant_weighted_energies.append(weighted_energy)
+        optimized_reactants.append(optimized_reactant)
 
     # --- 3. 吸着エネルギー計算 ---
     e_reactants_total = sum(reactant_energies)
-    e_adsorption = e_adsorbed - e_reactants_total
+    e_reactants_weighted_total = sum(reactant_weighted_energies)
+    e_adsorption = e_adsorbed - e_reactants_weighted_total
 
     # --- 結果ログ出力 ---
     logger.info("=" * 80)
@@ -171,10 +251,16 @@ def calculate_adsorption_energy(
     logger.info(f"吸着後構造エネルギー: {e_adsorbed:.6f} eV")
     logger.info("反応物エネルギー:")
     for i, e in enumerate(reactant_energies):
+        symbols = reactant_structures_input[i].structure.symbols
+        coeff = reactant_coefficients[i]
+        weighted = reactant_weighted_energies[i]
         logger.info(
-            f"  反応物{i+1} ({reactant_structures_input[i].structure.symbols}): {e:.6f} eV"
+            f"  反応物{i+1} ({symbols}): {e:.6f} eV × 係数{coeff:.6f} = {weighted:.6f} eV"
         )
-    logger.info(f"反応物合計エネルギー: {e_reactants_total:.6f} eV")
+    logger.info(f"反応物合計エネルギー(未係数): {e_reactants_total:.6f} eV")
+    logger.info(
+        f"反応物合計エネルギー(係数適用): {e_reactants_weighted_total:.6f} eV"
+    )
     logger.info(f"吸着エネルギー: {e_adsorption:.6f} eV")
     if e_adsorption < 0:
         logger.info("→ 吸着は熱力学的に有利")
@@ -185,7 +271,17 @@ def calculate_adsorption_energy(
     # サマリーをロガーに出力
     logger.info(f"吸着エネルギー計算完了: E_ads = {e_adsorption:.3f} eV")
 
-    return e_adsorption
+    return CAEOutput(
+        adsorption_energy=e_adsorption,
+        optimized_adsorbed=optimized_adsorbed,
+        optimized_reactants=optimized_reactants,
+        e_adsorbed=e_adsorbed,
+        reactant_energies=reactant_energies,
+        reactant_coefficients=reactant_coefficients,
+        reactant_weighted_energies=reactant_weighted_energies,
+        e_reactants_total=e_reactants_total,
+        e_reactants_weighted_total=e_reactants_weighted_total,
+    )
 
 
 # ----------

@@ -134,7 +134,12 @@ def optimize_and_get_energy(
     work_atoms.calc = calculator
 
     logger.info(f"--- {label} 処理開始 ---")
-    logger.info(f"原子数: {len(work_atoms)}")
+    n_atoms = len(work_atoms)
+    logger.info(f"原子数: {n_atoms}")
+    if n_atoms == 1:
+        logger.warning(
+            f"{label}: 原子数が1のため、最適化を行ってもエネルギーは常に0 eVとなります。"
+        )
     logger.info(f"組成: {work_atoms.symbols}")
 
     # 制約情報のログ出力
