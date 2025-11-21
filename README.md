@@ -37,6 +37,43 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `cutoffs (Sequence[float] | None)`: 各原子のカットオフ半径。`None` なら `natural_cutoffs(atoms)`。
     - `cutoff_scaling (float)`: `natural_cutoffs` に掛ける倍率（1.0でそのまま）。
   - ↩️ 戻り値: `(coord_num: int, neighbors: list[ase.Atom] | list[int])`。
+- **enumerate_simplex_compositions(elements, step, rounding_decimals=None) / iter_simplex_compositions(...) / count_simplex_compositions(num_elements, step)**
+  - 🧩 何をする: シンプレックス格子点（刻み幅 step で合計1になる組成）を列挙したり、逐次生成したり、件数を見積もったりできます。
+  - 🗺️ 使う場面: 多元素合金の組成探索。`HandleAtoms.substitute_elements()` の new 引数にそのまま渡せる辞書を作りたいとき。
+  - 🔧 主な引数:
+    - `elements (Sequence[str])`: 構成元素。順序は出力にも反映。重複不可。
+    - `step (float)`: 刻み幅。1/step が整数（許容誤差内）となる値のみ指定可（例: 0.5, 0.25, 0.1）。
+    - `rounding_decimals (int | None)`: `enumerate_*` / `iter_*` で出力を丸めたい場合の桁数。None なら丸めず返す。
+    - `num_elements (int)`: `count_simplex_compositions` 用。1 以上の整数。
+  - ↩️ 戻り値:
+    - `enumerate_*`: `list[dict[str, float]]`
+    - `iter_*`: `Iterator[dict[str, float]]`（巨大な組成空間を逐次処理）
+    - `count_*`: `int`
+  - 📝 メモ:
+    - 刻み幅は厳格チェック（1 を割り切れない値は ValueError）。
+    - 大規模探索は `iter_simplex_compositions` で必要な組成だけを流し、`count_*` で件数を事前把握すると便利。
+
+  ```python
+  from ase_toolbox.CalcValue import (
+      enumerate_simplex_compositions,
+      iter_simplex_compositions,
+      count_simplex_compositions,
+  )
+  from ase_toolbox.HandleAtoms import substitute_elements
+
+  elements = ["Cu", "Au", "Pd"]
+  step = 0.25  # 1/step は整数である必要があります
+  base_slab = ...  # 事前に作成した ase.Atoms
+
+  print("total combos:", count_simplex_compositions(len(elements), step))  # => 20
+
+  compositions = enumerate_simplex_compositions(elements, step)
+  print("preview:", compositions[:3])
+
+  for comp in iter_simplex_compositions(elements, step):
+      alloy = substitute_elements(base_slab, base_slab, comp, inplace=False, seed=42)
+      # ここでエネルギー計算やフィルタリングを行う
+  ```
 
 ### FindAtoms.py（原子の探索）
 - **find_atom_by_index(atoms, index)**

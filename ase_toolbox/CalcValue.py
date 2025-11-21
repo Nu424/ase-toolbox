@@ -6,11 +6,245 @@ ASEのAtomsオブジェクトから、特定の値を計算するための関数
 - coordination_number(): 配位数を計算する
 """
 
-from typing import Sequence, Optional, Literal
+from itertools import combinations
+import math
+from typing import Iterator, Sequence, Optional, Literal
 from ase import Atoms, Atom
 from ase.neighborlist import NeighborList, natural_cutoffs
-import numpy as np
-from numpy.typing import NDArray
+
+
+def _validate_step(step: float, *, tol: float = 1e-12) -> int:
+    """
+    刻み幅 step を検証し、シンプレックス格子の分割数を返す。
+    """
+    try:
+        step_value = float(step)
+    except (TypeError, ValueError):
+        raise TypeError("step は float と互換性のある数値を指定してください。") from None
+
+    if not (0.0 < step_value <= 1.0):
+        raise ValueError("step は 0 より大きく 1 以下の値を指定してください。")
+
+    total_units = int(round(1.0 / step_value))
+    if total_units <= 0:
+        raise ValueError("step から算出される分割数が不正です。別の刻み幅を指定してください。")
+
+    if abs(1.0 - total_units * step_value) > tol:
+        raise ValueError(
+            "step は 1 を分割できる値のみ指定できます。例: 0.5, 0.25, 0.1 など。"
+        )
+
+    return total_units
+
+
+def _normalize_elements(elements: Sequence[str]) -> list[str]:
+    """
+    元素リストを検証し、ユニークなリストに整形する。
+    """
+    if not elements:
+        raise ValueError("elements には 1 つ以上の元素記号を指定してください。")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for symbol in elements:
+        if not isinstance(symbol, str):
+            raise TypeError("elements には str のみ指定可能です。")
+        if symbol in seen:
+            raise ValueError(f"elements に重複が含まれています: {symbol}")
+        normalized.append(symbol)
+        seen.add(symbol)
+
+    return normalized
+
+
+def _validate_rounding_decimals(rounding_decimals: int | None) -> int | None:
+    """
+    丸め桁指定を検証し、正規化した値を返す。
+    """
+    if rounding_decimals is None:
+        return None
+
+    if not isinstance(rounding_decimals, int):
+        raise TypeError("rounding_decimals は int または None を指定してください。")
+    if rounding_decimals < 0:
+        raise ValueError("rounding_decimals は 0 以上の整数を指定してください。")
+
+    return rounding_decimals
+
+
+def _iter_simplex_counts(num_elements: int, total_units: int) -> Iterator[list[int]]:
+    """
+    Bars and Stars を用いて、合計 total_units となる非負整数解を列挙する。
+
+    Args:
+        num_elements (int): 元素の数。1 以上の整数を指定。
+        total_units (int): 合計値。0 以上の整数を指定。
+
+    Yields:
+        list[int]: 各元素の個数。["Cu", "Au", "Pd"] の場合は [0, 0, 1] など。
+
+    Raises:
+        ValueError: num_elements が 1 未満、または total_units が 0 未満の場合。
+    """
+    if num_elements <= 0:
+        raise ValueError("num_elements は 1 以上を指定してください。")
+    if total_units < 0:
+        raise ValueError("total_units は 0 以上を指定してください。")
+
+    if num_elements == 1:
+        yield [total_units]
+        return
+
+    upper = total_units + num_elements - 1 # upper(=最大数)は、星の数(=total_units) + 棒の数(=num_elements - 1)
+    for dividers in combinations(range(upper), num_elements - 1): # 最大の枠のうち、どこに棒を入れるか
+        counts: list[int] = []
+        prev = -1 # 前の棒の位置
+        for divider in (*dividers, upper):
+            counts.append(divider - prev - 1) # 前の棒の位置から、新しい棒の位置まで、星の数を計算
+            prev = divider
+        yield counts
+
+
+def _counts_to_composition(
+    elements: Sequence[str],
+    counts: Sequence[int],
+    total_units: int,
+    rounding_decimals: int | None,
+) -> dict[str, float]:
+    """
+    カウント列を組成辞書に変換する。
+
+    Args:
+        elements (Sequence[str]): 元素のリスト。
+        counts (Sequence[int]): 各元素の個数。_iter_simplex_counts() で生成されたリスト。
+        total_units (int): 合計値。
+        rounding_decimals (int | None): 戻り値を丸める小数点以下桁数。
+
+    Returns:
+        dict[str, float]: 元素記号をキー、組成比を値とする辞書。
+
+    Raises:
+        ValueError: total_units が 0 未満の場合。
+    """
+    if total_units <= 0:
+        raise ValueError("total_units は正の整数である必要があります。")
+
+    fractions = [count / total_units for count in counts]
+
+    if rounding_decimals is None:
+        return {sym: frac for sym, frac in zip(elements, fractions)} # sym: symbol(元素記号)
+
+    rounded = [round(frac, rounding_decimals) for frac in fractions]
+    if len(rounded) >= 2:
+        partial_sum = sum(rounded[:-1])
+        rounded[-1] = round(1.0 - partial_sum, rounding_decimals)
+    else:
+        rounded[0] = round(1.0, rounding_decimals)
+
+    return {sym: val for sym, val in zip(elements, rounded)}
+
+
+def iter_simplex_compositions(
+    elements: Sequence[str],
+    step: float,
+    *,
+    rounding_decimals: int | None = None,
+) -> Iterator[dict[str, float]]:
+    """
+    シンプレックス格子点上の組成（合計1）を逐次的に生成する。
+
+    Args:
+        elements (Sequence[str]): 構成元素のリスト。重複は不可。
+        step (float): 刻み幅。1/step が整数（許容誤差内）となる値を指定する。
+        rounding_decimals (int | None, optional): 戻り値を丸める小数点以下桁数。
+            None の場合は丸めずに返す。デフォルトは None。
+
+    Yields:
+        dict[str, float]: 元素記号をキー、組成比を値とする辞書。
+
+    Raises:
+        TypeError: elements に str 以外が含まれる場合、または rounding_decimals の型が不正な場合。
+        ValueError: elements が空、重複を含む、step が条件を満たさない場合。
+
+    Examples:
+        >>> gen = iter_simplex_compositions(["Cu", "Au"], 0.5)
+        >>> next(gen)
+        {'Cu': 0.0, 'Au': 1.0}
+        >>> next(gen)
+        {'Cu': 0.5, 'Au': 0.5}
+
+    Note:
+        - 戻り値の辞書は `HandleAtoms.substitute_elements()` の new 引数に直接渡せる。
+        - 大規模探索ではこの逐次版を使い、必要な組成のみ評価するのが効率的。
+    """
+    normalized = _normalize_elements(elements)
+    rounding = _validate_rounding_decimals(rounding_decimals)
+    total_units = _validate_step(step)
+
+    for counts in _iter_simplex_counts(len(normalized), total_units):
+        yield _counts_to_composition(normalized, counts, total_units, rounding)
+
+
+def enumerate_simplex_compositions(
+    elements: Sequence[str],
+    step: float,
+    *,
+    rounding_decimals: int | None = None,
+) -> list[dict[str, float]]:
+    """
+    シンプレックス格子点上の全組成をリストとして取得する。
+
+    Args:
+        elements (Sequence[str]): 構成元素のリスト。順序は出力にも反映される。
+        step (float): 刻み幅。1/step が整数（許容誤差内）となる値を指定する。
+        rounding_decimals (int | None, optional): 組成比を丸める桁数。None なら丸めない。
+
+    Returns:
+        list[dict[str, float]]: 各元素の組成辞書を要素とするリスト。
+
+    Raises:
+        TypeError: elements に str 以外が含まれる場合、または rounding_decimals の型が不正な場合。
+        ValueError: elements が空、重複を含む、step が条件を満たさない場合。
+
+    Examples:
+        >>> enumerate_simplex_compositions(["Cu", "Au"], 0.5)
+        [{'Cu': 0.0, 'Au': 1.0}, {'Cu': 0.5, 'Au': 0.5}, {'Cu': 1.0, 'Au': 0.0}]
+    """
+    return list(
+        iter_simplex_compositions(
+            elements, step, rounding_decimals=rounding_decimals
+        )
+    )
+
+
+def count_simplex_compositions(num_elements: int, step: float) -> int:
+    """
+    刻み幅と元素数から、列挙される組成の総数を計算する。
+
+    Args:
+        num_elements (int): 元素の数。1 以上の整数を指定。
+        step (float): 刻み幅。1/step が整数（許容誤差内）となる値を指定する。
+
+    Returns:
+        int: 対応する組成の総数。
+
+    Raises:
+        TypeError: num_elements が int ではない場合。
+        ValueError: num_elements が 1 未満、または step が条件を満たさない場合。
+
+    Examples:
+        >>> count_simplex_compositions(3, 0.25)
+        20
+    """
+    if not isinstance(num_elements, int):
+        raise TypeError("num_elements には int を指定してください。")
+    if num_elements <= 0:
+        raise ValueError("num_elements は 1 以上の整数を指定してください。")
+
+    total_units = _validate_step(step)
+    return math.comb(total_units + num_elements - 1, num_elements - 1)
+
 
 
 # 配位数を計算する
