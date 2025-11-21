@@ -28,6 +28,9 @@ from .FindAtoms import (
 )
 from .util import ConditionalLogger, ensure_logger, resolve_target_indices
 
+_COMPOSITION_SUM_TOL: float = 1e-6
+_STEP_RATIO_TOL: float = 1e-8
+
 
 # 例外クラス
 class InvalidElementSymbolError(ValueError):
@@ -320,6 +323,53 @@ def mix_lattice_constant(
         "a_mixed": float(a_mixed),
     }
     return a_mixed, detail
+
+
+def _normalize_composition_dict(
+    composition: Mapping[str, float],
+    *,
+    tol: float = _COMPOSITION_SUM_TOL,
+) -> dict[str, float]:
+    """
+    組成辞書を検証し、正規化した辞書を返す。
+    """
+    if not isinstance(composition, Mapping) or len(composition) == 0:
+        raise ValueError("composition は1つ以上の項目を持つ dict[str, float] を指定してください。")
+
+    normalized: dict[str, float] = {}
+    total = 0.0
+
+    for key, value in composition.items():
+        if not isinstance(key, str):
+            raise TypeError("組成辞書のキーは str である必要があります。")
+        try:
+            fraction = float(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"組成比は数値である必要があります: key={key}") from exc
+        if fraction < 0:
+            raise ValueError(f"組成比は0以上である必要があります: {key}={value}")
+
+        symbol = key.capitalize()
+        normalized[symbol] = fraction
+        total += fraction
+
+    if not np.isclose(total, 1.0, atol=tol):
+        raise ValueError(
+            f"組成比の合計が1ではありません（現在: {total:.6f}）。許容誤差 {tol} 以内で1となるよう正規化してください。"
+        )
+
+    return normalized
+
+
+def _renormalize_composition(values: dict[str, float]) -> dict[str, float]:
+    """
+    値の合計が1になるように正規化する。合計が0の場合は例外。
+    """
+    clipped = {k: max(float(v), 0.0) for k, v in values.items()}
+    total = float(sum(clipped.values()))
+    if total <= 0:
+        raise ValueError("組成比の合計が0以下になりました。入力値を確認してください。")
+    return {k: val / total for k, val in clipped.items()}
 
 
 # 全原子に基板マスクを設定する
@@ -645,6 +695,149 @@ def substitute_elements(
         out[idx].symbol = sym
 
     return out
+
+
+def apply_layer_composition_gradient(
+    atoms: Atoms,
+    top_composition: Mapping[str, float],
+    bottom_composition: Mapping[str, float],
+    step_ratio: float,
+    *,
+    decimals: int = 4,
+    inplace: bool = False,
+    seed: int | None = None,
+    use_substrate_mask: Literal["auto", True, False] = "auto",
+    return_detail: bool = False,
+) -> Atoms | tuple[Atoms, dict[str, object]]:
+    """
+    スラブの層ごとに組成を線形補間し、最上面から最下面に向かってグラデーション状に置換する。
+
+    `top_composition` と `bottom_composition` で指定した組成を層グループ単位で補間し、
+    各層の原子を `substitute_elements()` でランダム置換する。ステップ割合
+    (`step_ratio`) は、総層数に対して何層ごとに組成を変化させるかを表す。
+
+    Args:
+        atoms (ase.Atoms): 操作対象のスラブ構造。
+        top_composition (Mapping[str, float]): 最上面の組成。合計1である必要がある。
+        bottom_composition (Mapping[str, float]): 最下面の組成。合計1である必要がある。
+        step_ratio (float): 0 < step_ratio ≤ 1。`step_ratio * 層数` が整数となり、
+            かつ層数を割り切れる必要がある。例: 層数4・step_ratio=0.5 → 2層ごとに組成変更。
+        decimals (int, optional): `separate_layers()` で層判定に用いる小数点以下桁数。
+        inplace (bool, optional): True の場合は `atoms` を直接書き換える。
+        seed (int | None, optional): 各層の置換に使用する乱数シード。層インデックスを加算して利用する。
+        use_substrate_mask (Literal["auto", True, False], optional):
+            層検出時に `is_substrate` マスクを使用するか。
+        return_detail (bool, optional): True の場合は補間結果の詳細情報も返す。
+
+    Returns:
+        ase.Atoms | tuple[ase.Atoms, dict[str, object]]:
+            - return_detail=False: 置換後の構造。
+            - return_detail=True: (構造, 詳細情報) のタプル。詳細情報には
+              層数や各層に適用した組成が含まれる。
+
+    Raises:
+        ValueError: 組成の合計が1にならない、層数が0、step_ratioが条件を満たさない等の場合。
+        TypeError: 引数の型が不正な場合。
+
+    Examples:
+        >>> from ase.build import surface, bulk
+        >>> from ase_toolbox.HandleAtoms import apply_layer_composition_gradient
+        >>> slab = surface(bulk("Cu"), (1, 1, 1), layers=4)
+        >>> graded = apply_layer_composition_gradient(
+        ...     slab,
+        ...     top_composition={"Au": 0.6, "Cu": 0.4},
+        ...     bottom_composition={"Cu": 1.0},
+        ...     step_ratio=0.5,
+        ...     seed=42,
+        ... )
+    """
+
+    try:
+        step_ratio_value = float(step_ratio)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("step_ratio は float と互換性のある値を指定してください。") from exc
+
+    if not (0.0 < step_ratio_value <= 1.0):
+        raise ValueError("step_ratio は 0 より大きく 1 以下の値を指定してください。")
+
+    # 層の検出（bottom -> top）を行い、top -> bottom の順序に反転
+    layers_bottom_to_top = separate_layers(
+        atoms,
+        return_type="indices",
+        decimals=decimals,
+        sort_by_z=True,
+        use_substrate_mask=use_substrate_mask,
+    )
+
+    if len(layers_bottom_to_top) == 0:
+        raise ValueError("層が検出できませんでした。スラブ構造を確認してください。")
+
+    layers_top_to_bottom = list(reversed(layers_bottom_to_top))
+    num_layers = len(layers_top_to_bottom)
+
+    raw_group_size = step_ratio_value * num_layers
+    group_size_layers = int(round(raw_group_size))
+    if group_size_layers <= 0:
+        raise ValueError("step_ratio と層数の組み合わせから有効な層グループが作成できません。")
+    if abs(raw_group_size - group_size_layers) > _STEP_RATIO_TOL:
+        raise ValueError(
+            "step_ratio * 層数 は整数となる必要があります。条件を満たす値を指定してください。"
+        )
+    if num_layers % group_size_layers != 0:
+        raise ValueError(
+            f"層数 {num_layers} は group_size_layers={group_size_layers} で割り切れる必要があります。"
+        )
+
+    num_groups = num_layers // group_size_layers
+
+    top_norm = _normalize_composition_dict(top_composition)
+    bottom_norm = _normalize_composition_dict(bottom_composition)
+    all_elements = sorted(set(top_norm) | set(bottom_norm))
+
+    # ---補完された組成を作成する
+    group_compositions: list[dict[str, float]] = []
+    for group_idx in range(num_groups):
+        fraction = 0.0 if num_groups == 1 else group_idx / (num_groups - 1)
+        interpolated: dict[str, float] = {}
+        for element in all_elements:
+            top_val = top_norm.get(element, 0.0)
+            bottom_val = bottom_norm.get(element, 0.0)
+            interpolated[element] = (1.0 - fraction) * top_val + fraction * bottom_val
+        normalized_comp = _renormalize_composition(interpolated)
+        group_compositions.append(normalized_comp)
+
+    if inplace:
+        output_atoms = atoms
+    else:
+        output_atoms = atoms.copy()
+
+    # ---レイヤーのまとまりごとに、組成を適用する
+    per_layer_compositions: list[dict[str, float]] = []
+    for layer_idx, layer_indices in enumerate(layers_top_to_bottom):
+        group_idx = layer_idx // group_size_layers
+        comp = group_compositions[group_idx]
+        per_layer_compositions.append(dict(comp))
+
+        layer_seed = None if seed is None else seed + layer_idx
+        substitute_elements(
+            output_atoms,
+            target=layer_indices,
+            new=comp,
+            inplace=True,
+            seed=layer_seed,
+        )
+
+    if not return_detail:
+        return output_atoms
+
+    detail: dict[str, object] = {
+        "num_layers": num_layers,
+        "group_size_layers": group_size_layers,
+        "num_groups": num_groups,
+        "layer_order": "top_to_bottom",
+        "per_layer_composition": per_layer_compositions,
+    }
+    return output_atoms, detail
 
 
 # 法線ベクトルを計算する

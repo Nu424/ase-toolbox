@@ -184,11 +184,21 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - ↩️ 戻り値: 制約付き `ase.Atoms`。
   - 📝 メモ: `use_substrate_mask="auto"` の場合、`is_substrate` マスクが存在すれば基板原子のみで層を検出します。
 
-- **substitute_elements(atoms, target, new, inplace=False, seed=None)**
-  - 🧩 何をする: 指定原子を新しい元素に置換。`new` は単一記号 or 組成辞書（合計1）。
-  - 🗺️ 場面: ドーピング、ランダム置換。
-  - 🔧 主な引数: `atoms`, `target`, `new (str | Mapping[str,float])`, `inplace`, `seed`。
-  - ↩️ 戻り値: 置換後 `ase.Atoms`。
+ - **substitute_elements(atoms, target, new, inplace=False, seed=None)**
+   - 🧩 何をする: 指定原子を新しい元素に置換。`new` は単一記号 or 組成辞書（合計1）。
+   - 🗺️ 場面: ドーピング、ランダム置換。
+   - 🔧 主な引数: `atoms`, `target`, `new (str | Mapping[str,float])`, `inplace`, `seed`。
+   - ↩️ 戻り値: 置換後 `ase.Atoms`。
+ 
+ - **apply_layer_composition_gradient(atoms, top_composition, bottom_composition, step_ratio, decimals=4, inplace=False, seed=None, use_substrate_mask="auto", return_detail=False)**
+   - 🧩 何をする: 最上面と最下面の組成を線形補間し、層ごとにグラデーション状の置換を行う。
+   - 🗺️ 場面: 表面だけAuリッチ、底面はCuリッチなど、層方向に組成を滑らかに変化させたいとき。
+   - 🔧 主な引数:
+     - `top_composition` / `bottom_composition`: 合計1となる組成辞書。片側にのみ存在する元素も0として扱われる。
+     - `step_ratio`: 0 < r ≤ 1。`r * 層数` を整数に丸めた値が層数を割り切れる必要あり（例: 4層・r=0.5 → 2層ごと）。
+     - `decimals`, `seed`, `use_substrate_mask`, `return_detail`。
+   - ↩️ 戻り値: グラデーション適用後 `ase.Atoms`。`return_detail=True` で層ごとの組成情報付きタプル。
+   - 📝 メモ: `seed` 指定時は層インデックスを加算したシードで `substitute_elements()` を呼び出すため再現性を確保できる。
 
 - **compute_surface_normal(atoms, target_atom, include_target=True, reference_vector=None, normalize=True, return_plane=False)**
   - 🧩 何をする: 対象原子近傍をPCAで局所平面近似し、法線ベクトルを返す。
