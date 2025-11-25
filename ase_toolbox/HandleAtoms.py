@@ -1201,7 +1201,8 @@ def place_adsorbate_on_surface(
     allow_search_surface_atom: bool = True,
     inplace: bool = False,
     use_substrate_mask: Literal["auto", True, False] = "auto",
-) -> Atoms:
+    return_detail: bool = False,
+) -> Atoms | tuple[Atoms, dict[str, tuple[float, float, float]]]:
     """
     指定した構造表面に、吸着分子を配置する。add_adsorbate()の高性能なラッパー関数。
 
@@ -1232,9 +1233,16 @@ def place_adsorbate_on_surface(
             デフォルトは "auto"。複数の吸着分子を配置する場合、set_substrate_mask_all() で
             事前に基板マスクを設定し、このパラメータを "auto" または True にすることで、
             既存の吸着分子の影響を受けずに正しく配置できます。
+        return_detail (bool, optional): True の場合は吸着サイト座標、配置後重心、金属側に最も
+            近い（最下点の）吸着原子座標を detail 辞書として同時に返します。
+            False の場合は従来通り構造のみを返します。
 
     Returns:
-        ase.Atoms: ベースと配置済み吸着分子を結合した構造。
+        ase.Atoms | tuple[ase.Atoms, dict[str, tuple[float, float, float]]]:
+            return_detail=False の場合はベースと吸着分子を結合した構造。
+            True の場合は (構造, {"site_position": (x, y, z_top),
+            "com_position": (x, y, z_com),
+            "contact_atom_position": (x, y, z_contact)}) を返します。
 
     Raises:
         ValueError: position が 'top'、'bridge'、'hollow' 以外の場合。
@@ -1432,6 +1440,8 @@ def place_adsorbate_on_surface(
     # Z位置合わせ: 吸着分子の最下点が z_top + height になるように移動
     z_min = ads.positions[:, 2].min()
     ads.positions[:, 2] += (z_top + height - z_min)
+    contact_atom_index = int(np.argmin(ads.positions[:, 2]))
+    contact_atom_position = tuple(float(v) for v in ads.positions[contact_atom_index])
 
     # ---構造を結合
     out = out + ads
@@ -1443,4 +1453,17 @@ def place_adsorbate_on_surface(
         out.set_array("is_substrate", new_mask)
 
     # ---返却する
+    if return_detail:
+        site_position = (
+            float(position_xy[0]),
+            float(position_xy[1]),
+            float(z_top),
+        )
+        com_position = tuple(float(v) for v in ads.get_center_of_mass())
+        detail = {
+            "site_position": site_position,
+            "com_position": com_position,
+            "contact_atom_position": contact_atom_position,
+        }
+        return out, detail
     return out

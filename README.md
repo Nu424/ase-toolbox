@@ -221,10 +221,25 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `align_vector (Sequence[float]|None)`: 吸着分子の整列方向ベクトル。指定時、このベクトルを+z軸に整列。Noneなら整列なし。
     - `rotate_about (Literal["com","cog"])`: 回転中心。"com"=質量中心、"cog"=幾何中心。デフォルトは"com"。
     - `separate_layers_decimals`, `allow_search_surface_atom`, `inplace`, `use_substrate_mask ("auto"|True|False)`
-  - ↩️ 戻り値: 結合後 `ase.Atoms`。
+    - `return_detail (bool)`: True で `(Atoms, detail)` を返却。detail には吸着サイト座標・配置後重心・最下点原子座標を含む。
+  - ↩️ 戻り値: 結合後 `ase.Atoms`。`return_detail=True` で `(Atoms, {"site_position": (x,y,z_top), "com_position": (x,y,z), "contact_atom_position": (x,y,z)})`。
   - 📝 メモ: 
     - 回転順序: align_vector整列 → rotation_deg回転 → 位置決定。併用可能。
     - 複数の吸着分子を配置する場合は、最初に `set_substrate_mask_all(substrate)` でマスクを設定してください。これにより、2つ目以降の吸着分子配置時も、層検出と高さ基準が常に基板のみに基づいて決定されます。`use_substrate_mask="auto"` がデフォルトで、マスクが存在すれば自動的に使用されます。
+  - 💡 例:
+    ```python
+    combined, detail = place_adsorbate_on_surface(
+        substrate=slab,
+        adsorbate=mol,
+        target_atom=None,
+        height=2.0,
+        position="hollow",
+        return_detail=True,
+    )
+    print("site:", detail["site_position"])  # (x, y, z_top)
+    print("com :", detail["com_position"])  # (x, y, z_after)
+    print("touch:", detail["contact_atom_position"])  # 最下点の吸着原子
+    ```
 
 - **mix_lattice_constant(composition, lattice_map=None, method="vegard", tol=1e-6, return_detail=False)**
   - 🧩 何をする: 組成 `{symbol: fraction}` から混合格子定数 `a` を計算。
