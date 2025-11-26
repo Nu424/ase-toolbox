@@ -1297,8 +1297,11 @@ def place_adsorbate_on_surface(
     target_atom: Atom = target_atom  # ここまでで、target_atomはAtomオブジェクトになっている
 
     # ---positionから、xy座標を取得する
+    site_atom_indices: list[int] = []
+
     if position == "top":
         position_xy = target_atom.position[:2]
+        site_atom_indices = [target_atom.index]
     elif position in ["bridge", "hollow"]:
         # 表面上で、target_atomの隣接原子を探す
         target_atom_neighbors = get_neighbors(substrate,
@@ -1315,8 +1318,10 @@ def place_adsorbate_on_surface(
             raise ValueError("隣接原子が存在せず、bridgeまたはhollowの位置を決定できません。")
         # ---bridgeの場合、1番目の隣接原子との中点を探す
         if position == "bridge":
+            bridge_neighbor = target_atom_neighbors[0]
             position_xy = (target_atom.position[:2] +
-                           target_atom_neighbors[0].position[:2]) / 2
+                           bridge_neighbor.position[:2]) / 2
+            site_atom_indices = [target_atom.index, bridge_neighbor.index]
         elif position == "hollow":
             # ---hollowの場合、もう1つの原子を探す
             # target_atomも隣接原子も、共通して隣接する原子を探す
@@ -1341,6 +1346,11 @@ def place_adsorbate_on_surface(
                     position_xy = (target_atom.position[:2] +
                                    neighbor.position[:2] +
                                    common_neighbor.position[:2]) / 3
+                    site_atom_indices = [
+                        target_atom.index,
+                        neighbor.index,
+                        common_neighbor.index,
+                    ]
                     break
             else:
                 raise ValueError("共通して隣接する原子が存在せず、hollowの位置を決定できません。")
@@ -1464,6 +1474,10 @@ def place_adsorbate_on_surface(
             "site_position": site_position,
             "com_position": com_position,
             "contact_atom_position": contact_atom_position,
+            "site_atom_indices": site_atom_indices,
+            "site_atom_elements": [
+                substrate[idx].symbol for idx in site_atom_indices
+            ],
         }
         return out, detail
     return out
