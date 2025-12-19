@@ -200,25 +200,25 @@ def separate_layers(
     atoms: Atoms,
     return_type: Literal["atoms", "indices"] = "atoms",
     *,
-    decimals: int = 4,
+    z_tolerance: float = 0.3,
     sort_by_z: bool = True,
     use_substrate_mask: Literal["auto", True, False] = "auto",
 ) -> list[list[Atom]] | list[list[int]]:
     """
     (平面用)スラブ構造を層別に分離し、各層の原子をリストとして返す。
 
-    z座標に基づいて原子を層ごとに分類し、指定された形式で返します。
-    層は z 座標の昇順（bottom -> top）または降順でソートできます。
+    z座標の近さに基づいて原子を層ごとに分類し、指定された形式で返します。
+    層は z 座標の昇順（bottom -> top）で生成され、必要に応じて昇順ソートを維持します。
 
     Args:
         atoms (ase.Atoms): 分離対象のスラブ構造。
         return_type (Literal["atoms", "indices"], optional): 返却形式。
             "atoms": 各層の原子オブジェクトのリスト。デフォルト。
             "indices": 各層の原子インデックスのリスト。
-        decimals (int, optional): z座標の丸め精度（小数点以下の桁数）。
-            デフォルトは4。層の判定精度に影響します。
-        sort_by_z (bool, optional): z座標で層をソートするか。
-            True: z座標昇順（下層から上層）、False: 検出順。デフォルトはTrue。
+        z_tolerance (float, optional): 同一層とみなす z 範囲 [Å]。層内の最小 z
+            から z_tolerance 以内にある原子を同一層とする。デフォルトは 0.3 Å。
+        sort_by_z (bool, optional): 層を z 座標で昇順に並べるか。
+            True: bottom -> top（検出順と同じ）、False: 検出順そのまま。
         use_substrate_mask (Literal["auto", True, False], optional): 基板マスクの使用設定。
             "auto": atoms.arrays に "is_substrate" が存在する場合、is_substrate==True の原子のみで層を検出。
             True: 基板マスクを使用（存在しない場合は全原子）。
@@ -236,6 +236,7 @@ def separate_layers(
 
     Raises:
         ValueError: return_type が "atoms" または "indices" 以外の場合。
+        ValueError: z_tolerance が 0 以下の場合。
 
     Examples:
         >>> from ase.build import surface, bulk
@@ -247,9 +248,11 @@ def separate_layers(
         >>> top_layer = separate_layers(slab)[-1]
         >>> print(f"最表面原子数: {len(top_layer)}")
     """
-    # --- return_type の検証 ---
+    # --- return_type / z_tolerance の検証 ---
     if return_type not in ("atoms", "indices"):
         raise ValueError("return_type は 'atoms' または 'indices' を指定してください。")
+    if z_tolerance <= 0.0:
+        raise ValueError("z_tolerance は 0 より大きい値を指定してください。")
 
     # --- 基板マスクの適用判定 ---
     should_use_mask = False
@@ -266,24 +269,43 @@ def separate_layers(
     else:
         target_indices = np.arange(len(atoms))
 
-    # --- z座標を丸めて一意な層を特定 ---
+    # --- z座標を取得して昇順ソート ---
     z_coords = atoms.positions[target_indices, 2]
-    rounded_z = np.round(z_coords, decimals=decimals)
-    unique_z_values = np.unique(rounded_z)
+    if len(z_coords) == 0:
+        layers_indices: list[list[int]] = []
+    else:
+        sorted_order = np.argsort(z_coords)
 
-    # --- 層をz座標でソート（昇順：下層から上層） ---
+        layers_indices: list[list[int]] = []
+        current_layer: list[int] = []
+        current_layer_min_z: float | None = None
+
+        for idx_in_target in sorted_order:
+            atom_index = int(target_indices[idx_in_target])
+            z_value = float(z_coords[idx_in_target])
+
+            if current_layer_min_z is None:
+                # 最初の原子でレイヤーを開始
+                current_layer_min_z = z_value
+                current_layer = [atom_index]
+                continue
+
+            # 層の基準（その層の最小z）との差で判定
+            if z_value - current_layer_min_z > z_tolerance:
+                layers_indices.append(current_layer)
+                current_layer_min_z = z_value
+                current_layer = [atom_index]
+            else:
+                current_layer.append(atom_index)
+
+        # 最終レイヤーを追加
+        if current_layer:
+            layers_indices.append(current_layer)
+
+    # --- 層の順序調整（必要なら） ---
     if sort_by_z:
-        unique_z_values.sort()
-
-    # --- 各層に属する原子インデックスを収集 ---
-    layers_indices: list[list[int]] = []
-
-    for z_value in unique_z_values:
-        # 該当するz座標を持つ原子のインデックスを取得
-        layer_mask = np.isclose(rounded_z, z_value, atol=10 ** (-decimals - 1))
-        # target_indices の中でのマスク位置を、元の atoms でのインデックスに変換
-        layer_indices = target_indices[layer_mask].tolist()
-        layers_indices.append(layer_indices)
+        # 生成順が z 昇順なのでそのまま
+        pass
 
     # --- 出力形式に応じて返却 ---
     if return_type == "atoms":

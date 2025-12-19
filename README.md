@@ -109,13 +109,13 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `return_type (Literal["atoms","indices"])`: 出力形式。
   - ↩️ 戻り値: `list[ase.Atom] | list[int]`。
 
-- **separate_layers(atoms, return_type="atoms", decimals=4, sort_by_z=True, use_substrate_mask="auto")**
+- **separate_layers(atoms, return_type="atoms", z_tolerance=0.3, sort_by_z=True, use_substrate_mask="auto")**
   - 🧩 何をする: z座標で層を検出し、層ごとに原子をグルーピング。
   - 🗺️ 場面: スラブで下層/上層に手を入れたいとき。
   - 🔧 主な引数:
     - `atoms (ase.Atoms)`: スラブ構造。
     - `return_type (Literal["atoms","indices"])`: 出力形式。
-    - `decimals (int)`: z丸め桁。層の判定に影響。
+    - `z_tolerance (float)`: 同一層とみなす z 許容幅 [Å]。
     - `sort_by_z (bool)`: 下→上の順で並べるか。
     - `use_substrate_mask (Literal["auto",True,False])`: 基板マスクの使用設定。"auto" の場合、`is_substrate` マスクが存在すれば基板原子のみで層を検出。デフォルトは "auto"。
   - ↩️ 戻り値: `list[list[ase.Atom]] | list[list[int]]`（`layered[0]` が最下層）。
@@ -177,10 +177,10 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `inplace (bool)`: 直接書換えるか（Falseでコピー返却）。
   - ↩️ 戻り値: 変更後 `ase.Atoms`（`inplace=True`なら引数のまま）。
 
-- **fix_layers(atoms, fixed_layers, inplace=False, decimals=4, logger=None, enable_logging=True, use_substrate_mask="auto")**
+- **fix_layers(atoms, fixed_layers, inplace=False, z_tolerance=0.3, logger=None, enable_logging=True, use_substrate_mask="auto")**
   - 🧩 何をする: 下から `fixed_layers` 個の層に `FixAtoms` 制約を付与。
   - 🗺️ 場面: スラブ計算の下層固定。
-  - 🔧 主な引数: `atoms`, `fixed_layers (int)`, `inplace`, `decimals`, `logger`, `enable_logging`, `use_substrate_mask ("auto"|True|False)`。
+  - 🔧 主な引数: `atoms`, `fixed_layers (int)`, `inplace`, `z_tolerance`, `logger`, `enable_logging`, `use_substrate_mask ("auto"|True|False)`。
   - ↩️ 戻り値: 制約付き `ase.Atoms`。
   - 📝 メモ: `use_substrate_mask="auto"` の場合、`is_substrate` マスクが存在すれば基板原子のみで層を検出します。
 
@@ -190,13 +190,13 @@ ASEを使った化学シミュレーションをサクッと進めるための�
    - 🔧 主な引数: `atoms`, `target`, `new (str | Mapping[str,float])`, `inplace`, `seed`。
    - ↩️ 戻り値: 置換後 `ase.Atoms`。
  
- - **apply_layer_composition_gradient(atoms, top_composition, bottom_composition, step_ratio, decimals=4, inplace=False, seed=None, use_substrate_mask="auto", return_detail=False)**
+ - **apply_layer_composition_gradient(atoms, top_composition, bottom_composition, step_ratio, z_tolerance=0.3, inplace=False, seed=None, use_substrate_mask="auto", return_detail=False)**
    - 🧩 何をする: 最上面と最下面の組成を線形補間し、層ごとにグラデーション状の置換を行う。
    - 🗺️ 場面: 表面だけAuリッチ、底面はCuリッチなど、層方向に組成を滑らかに変化させたいとき。
    - 🔧 主な引数:
      - `top_composition` / `bottom_composition`: 合計1となる組成辞書。片側にのみ存在する元素も0として扱われる。
      - `step_ratio`: 0 < r ≤ 1。`r * 層数` を整数に丸めた値が層数を割り切れる必要あり（例: 4層・r=0.5 → 2層ごと）。
-     - `decimals`, `seed`, `use_substrate_mask`, `return_detail`。
+     - `z_tolerance`, `seed`, `use_substrate_mask`, `return_detail`。
    - ↩️ 戻り値: グラデーション適用後 `ase.Atoms`。`return_detail=True` で層ごとの組成情報付きタプル。
    - 📝 メモ: `seed` 指定時は層インデックスを加算したシードで `substitute_elements()` を呼び出すため再現性を確保できる。
 
@@ -212,7 +212,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `substrate (ase.Atoms)`, `adsorbate (ase.Atoms)`, `target_atom`, `distance (float)`, `upper_tolerance`, `lower_tolerance`。
   - ↩️ 戻り値: 結合後 `ase.Atoms`。
 
-- **place_adsorbate_on_surface(substrate, adsorbate, target_atom, height, position, rotation_deg=None, align_vector=None, rotate_about="com", separate_layers_decimals=4, allow_search_surface_atom=True, inplace=False, use_substrate_mask="auto")**
+- **place_adsorbate_on_surface(substrate, adsorbate, target_atom, height, position, rotation_deg=None, align_vector=None, rotate_about="com", z_tolerance=0.3, allow_search_surface_atom=True, inplace=False, use_substrate_mask="auto")**
   - 🧩 何をする: 指定した構造表面に、吸着分子を配置する。add_adsorbate()の高性能なラッパー関数。回転機能付き。
   - 🗺️ 場面: 表面に吸着分子を配置したい。特定の方向や角度で配置したい。
   - 🔧 主な引数:
@@ -220,7 +220,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
     - `rotation_deg (tuple[float,float,float]|None)`: オイラー角回転(rx,ry,rz)[度]。XYZ順に適用。Noneなら回転なし。
     - `align_vector (Sequence[float]|None)`: 吸着分子の整列方向ベクトル。指定時、このベクトルを+z軸に整列。Noneなら整列なし。
     - `rotate_about (Literal["com","cog"])`: 回転中心。"com"=質量中心、"cog"=幾何中心。デフォルトは"com"。
-    - `separate_layers_decimals`, `allow_search_surface_atom`, `inplace`, `use_substrate_mask ("auto"|True|False)`
+    - `z_tolerance`, `allow_search_surface_atom`, `inplace`, `use_substrate_mask ("auto"|True|False)`
     - `return_detail (bool)`: True で `(Atoms, detail)` を返却。detail には吸着サイト座標・配置後重心・最下点原子座標を含む。
   - ↩️ 戻り値: 結合後 `ase.Atoms`。`return_detail=True` で `(Atoms, {"site_position": (x,y,z_top), "com_position": (x,y,z), "contact_atom_position": (x,y,z)})`。
   - 📝 メモ: 

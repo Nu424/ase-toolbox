@@ -491,7 +491,7 @@ def fix_layers(
     fixed_layers: int,
     *,
     inplace: bool = False,
-    decimals: int = 4,
+    z_tolerance: float = 0.3,
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = False,
     use_substrate_mask: Literal["auto", True, False] = "auto",
@@ -508,8 +508,7 @@ def fix_layers(
             0 の場合は何も固定しません。
         inplace (bool, optional): True の場合は atoms を破壊的に更新。
             False の場合はコピーを作成して返します。デフォルトはFalse。
-        decimals (int, optional): z座標の丸め精度（小数点以下の桁数）。
-            デフォルトは4。層の判定精度に影響します。
+        z_tolerance (float, optional): 同一層とみなす z 範囲 [Å]。デフォルトは 0.3 Å。
         logger (Optional[ConditionalLogger], optional): ログ出力制御。
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
@@ -547,7 +546,7 @@ def fix_layers(
     layers_indices = separate_layers(
         atoms,
         return_type="indices",
-        decimals=decimals,
+        z_tolerance=z_tolerance,
         sort_by_z=True,  # 下層から上層の順序
         use_substrate_mask=use_substrate_mask,
     )
@@ -578,10 +577,10 @@ def fix_layers(
 
         # 最上固定層のz座標を取得（報告用）
         fixed_z_coords = result_atoms.positions[fixed_indices, 2]
-        max_fixed_z = np.max(np.round(fixed_z_coords, decimals=decimals))
+        max_fixed_z = float(np.max(fixed_z_coords))
 
         logger.info(
-            f"Z≤{max_fixed_z:.{decimals}f} Å の原子 {len(fixed_indices)} 個を固定しました。"
+            f"Z≤{max_fixed_z:.4f} Å の原子 {len(fixed_indices)} 個を固定しました。"
         )
     else:
         logger.info("固定対象の原子が見つかりませんでした。")
@@ -703,7 +702,7 @@ def apply_layer_composition_gradient(
     bottom_composition: Mapping[str, float],
     step_ratio: float,
     *,
-    decimals: int = 4,
+    z_tolerance: float = 0.3,
     inplace: bool = False,
     seed: int | None = None,
     use_substrate_mask: Literal["auto", True, False] = "auto",
@@ -722,7 +721,7 @@ def apply_layer_composition_gradient(
         bottom_composition (Mapping[str, float]): 最下面の組成。合計1である必要がある。
         step_ratio (float): 0 < step_ratio ≤ 1。`step_ratio * 層数` が整数となり、
             かつ層数を割り切れる必要がある。例: 層数4・step_ratio=0.5 → 2層ごとに組成変更。
-        decimals (int, optional): `separate_layers()` で層判定に用いる小数点以下桁数。
+        z_tolerance (float, optional): `separate_layers()` で同一層とみなす z 範囲 [Å]。
         inplace (bool, optional): True の場合は `atoms` を直接書き換える。
         seed (int | None, optional): 各層の置換に使用する乱数シード。層インデックスを加算して利用する。
         use_substrate_mask (Literal["auto", True, False], optional):
@@ -764,7 +763,7 @@ def apply_layer_composition_gradient(
     layers_bottom_to_top = separate_layers(
         atoms,
         return_type="indices",
-        decimals=decimals,
+        z_tolerance=z_tolerance,
         sort_by_z=True,
         use_substrate_mask=use_substrate_mask,
     )
@@ -1197,7 +1196,7 @@ def place_adsorbate_on_surface(
     rotation_deg: tuple[float, float, float] | None = None,
     align_vector: Sequence[float] | None = None,
     rotate_about: Literal["com", "cog"] = "com",
-    separate_layers_decimals: int = 4,
+    z_tolerance: float = 0.3,
     allow_search_surface_atom: bool = True,
     inplace: bool = False,
     use_substrate_mask: Literal["auto", True, False] = "auto",
@@ -1223,7 +1222,7 @@ def place_adsorbate_on_surface(
             "com": 質量中心（Center of Mass）を中心に回転。
             "cog": 幾何中心（Center of Geometry）を中心に回転。
             デフォルトは "com"。
-        separate_layers_decimals (int): 層を分割する際の小数点以下の桁数。
+        z_tolerance (float, optional): 表面層を検出する際の z 許容幅 [Å]。デフォルトは 0.3 Å。
         allow_search_surface_atom (bool): target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
         inplace (bool): もとの構造を置き換えるかどうか。
         use_substrate_mask (Literal["auto", True, False], optional): 基板マスクの使用設定。
@@ -1273,7 +1272,7 @@ def place_adsorbate_on_surface(
     # ---表面原子を取得する（基板マスク適用）
     layers: list[list[Atom]] = separate_layers(
         substrate,
-        decimals=separate_layers_decimals,
+        z_tolerance=z_tolerance,
         return_type="atoms",
         use_substrate_mask=use_substrate_mask,
     )
