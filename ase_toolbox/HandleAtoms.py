@@ -1306,13 +1306,12 @@ def place_adsorbate_on_surface(
         target_atom_neighbors = get_neighbors(substrate,
                                               target_atom,
                                               return_type="atoms")
-        # 表面上の隣接原子のみを残す
-        target_atom_neighbors = list(
-            filter(
-                lambda x: np.isclose(
-                    x.position[2],
-                    target_atom.position[2]),
-                target_atom_neighbors))
+        # 表面上の隣接原子のみを残す（z_tolerance で判定）
+        target_atom_neighbors = [
+            n
+            for n in target_atom_neighbors
+            if abs(n.position[2] - target_atom.position[2]) <= z_tolerance
+        ]
         if len(target_atom_neighbors) == 0:
             raise ValueError("隣接原子が存在せず、bridgeまたはhollowの位置を決定できません。")
         # ---bridgeの場合、1番目の隣接原子との中点を探す
@@ -1329,12 +1328,12 @@ def place_adsorbate_on_surface(
                 neighbor_neighbors = get_neighbors(substrate,
                                                    neighbor,
                                                    return_type="atoms")
-                # (表面上の隣接原子のみを残す)
-                neighbor_neighbors = list(
-                    filter(
-                        lambda x: np.isclose(x.position[2],
-                                             neighbor.position[2]),
-                        neighbor_neighbors))
+                # (表面上の隣接原子のみを残す: z_tolerance で判定)
+                neighbor_neighbors = [
+                    n
+                    for n in neighbor_neighbors
+                    if abs(n.position[2] - neighbor.position[2]) <= z_tolerance
+                ]
                 # 積集合を求める
                 common_neighbor_indices = set([a.index for a in target_atom_neighbors]) & \
                     set([a.index for a in neighbor_neighbors])
