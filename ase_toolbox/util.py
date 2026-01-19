@@ -386,3 +386,51 @@ def format_composition(composition: dict[str, float], *, decimals: int = 3) -> s
         percent = int(round(float(fraction) * 100))
         segments.append(f"{symbol}{percent:0{decimals}d}")
     return "".join(segments)
+
+
+def extract_composition(
+    text: str,
+    *,
+    decimals: int = 3,
+    epsilon: float = 1e-12,
+) -> dict[str, float]:
+    """文字列から組成辞書を復元する。
+
+    `format_composition` の逆変換。例: ``Cu050Au050`` → ``{"Cu": 0.5, "Au": 0.5}``
+
+    Args:
+        text: 組成ラベル文字列（例: ``Cu050Au050``）。
+        decimals: ゼロ埋めの桁数。デフォルトは3（``format_composition`` のデフォルトと一致）。
+        epsilon: 0とみなす閾値（abs(value) <= epsilon は除外）。
+
+    Returns:
+        dict[str, float]: 組成辞書。
+
+    Examples:
+        >>> extract_composition("Cu050Au050")
+        {"Cu": 0.5, "Au": 0.5}
+        >>> extract_composition("Cu100")
+        {"Cu": 1.0}
+    """
+    import re
+
+    composition: dict[str, float] = {}
+    if decimals <= 0:
+        raise ValueError("decimals must be positive")
+
+    # 元素記号（1-2文字の大文字+小文字）と、それに続く固定桁数の数字を抽出
+    # 例: decimals=3 なら Cu050, Au025 のような形式を想定
+    pattern = rf"([A-Z][a-z]?)(\d{{{decimals}}})"
+    matches = re.findall(pattern, text)
+
+    for symbol, percent_str in matches:
+        try:
+            percent = int(percent_str)
+            fraction = percent / 100.0
+            if abs(fraction) > epsilon:
+                composition[symbol] = fraction
+        except ValueError:
+            # 数字として解釈できない場合はスキップ
+            continue
+
+    return composition
