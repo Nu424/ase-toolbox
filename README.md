@@ -145,6 +145,40 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `atoms`, `target_atom`, `return_type`, `cutoffs`, `cutoff_scaling`, `upper_tolerance`, `lower_tolerance`。
   - ↩️ 戻り値: `list[ase.Atom] | list[int]`。
 
+### AlignSlab.py（スラブの傾き補正）
+- **align_slab(slab, selector=None, rotate_cell=False, recenter_to_cell=True, max_iters=1, angle_tolerance_deg=None, ...)**
+  - 🧩 何をする: 指定した点群選択で平面をフィットし、スラブの傾きを補正（selectorは単体/リスト対応）。
+  - 🗺️ 場面: 最適化後のスラブを、層構造が崩れない向きに戻したいとき。
+  - 🔧 主な引数:
+    - `slab (ase.Atoms)`: 対象のスラブ構造。
+    - `selector (PlanePointSelector | list[PlanePointSelector] | None)`: フィット点の選択関数（単体またはリスト）。
+    - `rotate_cell (bool)`: セルも回転させるか（デフォルトFalse）。
+    - `max_iters (int)`: セレクタ列を繰り返す回数。
+    - `angle_tolerance_deg (float | None)`: 収束角度[deg]（指定時のみ判定）。
+  - 📝 メモ: selector=None の場合、`seed_neighbors` → `middle_layer_farthest_k` の順で補正します。
+  - ↩️ 戻り値: `ase.Atoms`。
+
+- **select_points_middle_layer / select_points_middle_layer_farthest_k / select_points_seed_neighbors**
+  - 🧩 何をする: 平面フィットに使う原子の選択戦略を提供。
+  - 🗺️ 場面: 段階ごとに「中央層」「遠い点」などを選びたいとき。
+
+  ```python
+  from ase_toolbox.AlignSlab import (
+      align_slab,
+      select_points_seed_neighbors,
+      select_points_middle_layer_farthest_k,
+  )
+
+  aligned = align_slab(
+      slab,
+      selector=[
+          lambda atoms: select_points_seed_neighbors(atoms, cutoff=3.0),
+          lambda atoms: select_points_middle_layer_farthest_k(atoms, k=8),
+      ],
+      max_iters=1,
+  )
+  ```
+
 ### HandleAtoms.py（原子操作）
 - **smiles_to_atoms(smiles, optimize="UFF", random_seed=None)**
   - 🧩 何をする: SMILES文字列からASE Atomsオブジェクトを生成する。
