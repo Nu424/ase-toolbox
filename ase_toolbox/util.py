@@ -1,4 +1,5 @@
 from datetime import datetime
+import math
 import logging
 from typing import Optional
 from ase import Atoms, Atom
@@ -6,6 +7,9 @@ from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
 
 
+# ----------
+# ---ロギング関係
+# ----------
 class ConditionalLogger:
     """
     ログ出力を条件によって制御するラッパークラス。
@@ -97,6 +101,9 @@ def ensure_logger(
     return logger
 
 
+# ----------
+# ---構造最適化をひとまとめに
+# ----------
 def optimize_and_get_energy(
     atoms: Atoms,
     calculator: Calculator,
@@ -178,6 +185,9 @@ def optimize_and_get_energy(
     return e_final
 
 
+# ----------
+# ---形式の整理
+# ----------
 def resolve_target_indices(
     base_atoms: Atoms, target: int | Atom | Atoms | list[int] | list[Atom]
 ) -> list[int]:
@@ -207,7 +217,7 @@ def resolve_target_indices(
     if isinstance(target, int):
         if not (0 <= target < len(base_atoms)):
             raise IndexError(
-                f"インデックス{target}は範囲外です（0-{len(base_atoms)-1}）。"
+                f"インデックス{target}は範囲外です（0-{len(base_atoms) - 1}）。"
             )
         target_indices = [target]
 
@@ -217,7 +227,7 @@ def resolve_target_indices(
             index = target.index
             if not (0 <= index < len(base_atoms)):
                 raise IndexError(
-                    f"インデックス{index}は範囲外です（0-{len(base_atoms)-1}）。"
+                    f"インデックス{index}は範囲外です（0-{len(base_atoms) - 1}）。"
                 )
             target_indices = [index]
         except (AttributeError, ValueError):
@@ -236,7 +246,7 @@ def resolve_target_indices(
             for idx in target:
                 if not (0 <= idx < len(base_atoms)):
                     raise IndexError(
-                        f"インデックス{idx}は範囲外です（0-{len(base_atoms)-1}）。"
+                        f"インデックス{idx}は範囲外です（0-{len(base_atoms) - 1}）。"
                     )
             target_indices = list(target)
         elif all(isinstance(item, Atom) for item in target):
@@ -246,7 +256,7 @@ def resolve_target_indices(
                     index = atom.index
                     if not (0 <= index < len(base_atoms)):
                         raise IndexError(
-                            f"インデックス{index}は範囲外です（0-{len(base_atoms)-1}）。"
+                            f"インデックス{index}は範囲外です（0-{len(base_atoms) - 1}）。"
                         )
                     target_indices.append(index)
                 except (AttributeError, ValueError):
@@ -327,3 +337,52 @@ def sanitize_atoms_for_xyz_write(atoms: Atoms) -> Atoms:
         pass
 
     return clean
+
+
+def normalize_composition(
+    composition: dict[str, float],
+    tol: float = 1e-6,
+) -> dict[str, float]:
+    """組成辞書を検証し、正規化した辞書を返す。
+
+    Args:
+        composition: 元素記号をキーとした組成比の辞書。
+        tol: 合計値の許容誤差。
+
+    Returns:
+        dict[str, float]: 正規化後の組成辞書。
+
+    Notes:
+    - 以下をチェックする。
+      - 組成の合計値が1か？
+      - 元素記号の先頭が大文字か？
+    """
+    if not composition:
+        raise ValueError("composition is empty")
+
+    filtered = {k: float(v) for k, v in composition.items() if float(v) > 0.0}
+    if not filtered:
+        raise ValueError("composition has no positive fractions")
+
+    total = float(sum(filtered.values()))
+    if not math.isclose(total, 1.0, abs_tol=tol):
+        raise ValueError(f"composition sum must be 1.0 (got {total:.6f})")
+
+    return {str(k).capitalize(): float(v) / total for k, v in filtered.items()}
+
+
+def format_composition(composition: dict[str, float], *, decimals: int = 3) -> str:
+    """元素組成の辞書から表示用ラベルを作成する。(例: `Cu050Au050`)
+
+    Args:
+        composition: 元素記号をキーとした組成比の辞書。
+        decimals: ゼロ埋めする桁数。デフォルトは3。
+
+    Returns:
+        str: 表示用ラベル。
+    """
+    segments = []
+    for symbol, fraction in sorted(composition.items()):
+        percent = int(round(float(fraction) * 100))
+        segments.append(f"{symbol}{percent:0{decimals}d}")
+    return "".join(segments)
