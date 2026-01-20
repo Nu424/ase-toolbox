@@ -1,10 +1,13 @@
 from datetime import datetime
 import math
 import logging
-from typing import Optional
+import re
+from typing import Optional, Mapping
 from ase import Atoms, Atom
 from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
+
+_ELEMENT_SYMBOL_RE = re.compile(r"^[A-Z][a-z]?$")
 
 
 # ----------
@@ -339,36 +342,84 @@ def sanitize_atoms_for_xyz_write(atoms: Atoms) -> Atoms:
     return clean
 
 
+# ----------
+# ---組成辞書の正規化・表示・抽出
+# ----------
 def normalize_composition(
-    composition: dict[str, float],
+    composition: Mapping[str, float],
+    *,
     tol: float = 1e-6,
+    rel_tol: float = 1e-5,
+    keep_zero: bool = True,
+    validate_symbols: bool = True,
+    renormalize: bool = False,
+    clip_negative: bool = False,
 ) -> dict[str, float]:
     """組成辞書を検証し、正規化した辞書を返す。
 
     Args:
         composition: 元素記号をキーとした組成比の辞書。
-        tol: 合計値の許容誤差。
-
+        tol: 合計値の許容絶対誤差。
+        rel_tol: 合計値の許容相対誤差。
+        keep_zero: 0の比率を出力に残すか。
+        validate_symbols: 元素記号の形式を検証するか。
+        renormalize: Trueの場合、合計が1になるよう正規化する。
+        clip_negative: renormalize=Trueのとき、負値を0にクリップする。
     Returns:
         dict[str, float]: 正規化後の組成辞書。
 
     Notes:
     - 以下をチェックする。
-      - 組成の合計値が1か？
-      - 元素記号の先頭が大文字か？
+      - 組成の合計値が1か（renormalize=True の場合は再正規化）。
+      - 元素記号の形式。
+      - 組成比が0以上か。
     """
-    if not composition:
-        raise ValueError("composition is empty")
+    if not isinstance(composition, Mapping):
+        raise TypeError("composition は Mapping[str, float] を指定してください。")
+    if len(composition) == 0:
+        raise ValueError("composition は1つ以上の項目を指定してください。")
 
-    filtered = {k: float(v) for k, v in composition.items() if float(v) > 0.0}
-    if not filtered:
+    normalized: dict[str, float] = {}
+    total = 0.0
+
+    for key, value in composition.items():
+        if not isinstance(key, str):
+            raise TypeError("組成辞書のキーは str である必要があります。")
+        try:
+            fraction = float(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"組成比は数値である必要があります: key={key}") from exc
+
+        if fraction < 0.0:
+            if renormalize and clip_negative:
+                fraction = 0.0
+            else:
+                raise ValueError(
+                    f"組成比は0以上の値である必要があります: {key}={value}"
+                )
+
+        symbol = key.capitalize()
+        if validate_symbols and _ELEMENT_SYMBOL_RE.fullmatch(symbol) is None:
+            raise ValueError(f"元素記号の形式が不正です: {key}")
+
+        if keep_zero or fraction > 0.0:
+            normalized[symbol] = normalized.get(symbol, 0.0) + fraction
+            total += fraction
+
+    if not normalized:
         raise ValueError("composition has no positive fractions")
 
-    total = float(sum(filtered.values()))
-    if not math.isclose(total, 1.0, abs_tol=tol):
-        raise ValueError(f"composition sum must be 1.0 (got {total:.6f})")
+    if renormalize:
+        if total <= 0.0:
+            raise ValueError(
+                "組成比の合計が0以下になりました。入力値を確認してください。"
+            )
+        return {k: val / total for k, val in normalized.items()}
 
-    return {str(k).capitalize(): float(v) / total for k, v in filtered.items()}
+    if not math.isclose(total, 1.0, rel_tol=rel_tol, abs_tol=tol):
+        raise ValueError(f"組成比の合計が1ではありません（現在: {total:.6f}）。")
+
+    return normalized
 
 
 def format_composition(composition: dict[str, float], *, decimals: int = 3) -> str:

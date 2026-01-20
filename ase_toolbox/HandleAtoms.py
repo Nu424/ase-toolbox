@@ -26,23 +26,14 @@ from .FindAtoms import (
     get_neighbors_with_coordination_condition,
     get_neighbors,
 )
-from .util import ConditionalLogger, ensure_logger, resolve_target_indices
+from .util import ConditionalLogger, ensure_logger, resolve_target_indices, normalize_composition
 
 _COMPOSITION_SUM_TOL: float = 1e-6
 _STEP_RATIO_TOL: float = 1e-8
 
 
-# 例外クラス
-class InvalidElementSymbolError(ValueError):
-    """元素記号が不正な場合に投げる例外。"""
-
-
 class LatticeConstantNotFoundError(KeyError):
     """格子定数が見つからない場合に投げる例外。"""
-
-
-class CompositionSumError(ValueError):
-    """組成の合計が1にならない等の不整合に対して投げる例外。"""
 
 
 # 内部デフォルトの格子定数マップ（代表値, 単位: Å）
@@ -215,15 +206,16 @@ def _get_element_lattice_constant(symbol: str, user_map: dict[str, float] | None
         float: 格子定数[Å]。
 
     Raises:
-        InvalidElementSymbolError: 元素記号が不正な形式の場合。
+        TypeError: symbol の型が不正な場合。
+        ValueError: 元素記号が不正な形式の場合。
         LatticeConstantNotFoundError: 対象元素の格子定数が見つからない場合。
     """
     if not isinstance(symbol, str):
-        raise InvalidElementSymbolError("元素記号 symbol は str を指定してください。")
+        raise TypeError("元素記号 symbol は str を指定してください。")
 
     sym = symbol.capitalize()
     if re.fullmatch(r"^[A-Z][a-z]?$", sym) is None:
-        raise InvalidElementSymbolError(f"元素記号の形式が不正です: {symbol}")
+        raise ValueError(f"元素記号の形式が不正です: {symbol}")
 
     # user_map を優先
     if user_map is not None:
@@ -266,30 +258,20 @@ def mix_lattice_constant(
         float | tuple[float, dict]: 混合格子定数（Å）。return_detail=True の場合は (a, detail)。
 
     Raises:
-        CompositionSumError: 比率合計が1から外れる、負値/ゼロが含まれる等。
-        InvalidElementSymbolError: 不正な元素記号。
+        ValueError: 比率合計が1から外れる、負値が含まれる等。
+        TypeError: 入力の型が不正な場合。
         LatticeConstantNotFoundError: 格子定数未定義の元素を含む場合。
         NotImplementedError: 未対応の method を指定した場合。
     """
-    if not isinstance(composition, dict) or len(composition) == 0:
-        raise CompositionSumError("composition は非空の dict[str, float] を指定してください。")
-
-    # 検証と正規化
-    symbols: list[str] = []
-    fractions: list[float] = []
-    for k, v in composition.items():
-        sym = k.capitalize()
-        if re.fullmatch(r"^[A-Z][a-z]?$", sym) is None:
-            raise InvalidElementSymbolError(f"元素記号の形式が不正です: {k}")
-        f = float(v)
-        if f <= 0:
-            raise CompositionSumError(f"組成比は正の値である必要があります: {k}={v}")
-        symbols.append(sym)
-        fractions.append(f)
-
-    total = float(np.sum(fractions))
-    if not np.isclose(total, 1.0, atol=tol):
-        raise CompositionSumError(f"組成の合計が1ではありません（現在: {total:.6f}）。")
+    normalized = normalize_composition(
+        composition,
+        tol=tol,
+        keep_zero=True,
+        validate_symbols=True,
+        renormalize=False,
+    )
+    symbols = list(normalized.keys())
+    fractions = list(normalized.values())
 
     # a_i の収集
     a_map: dict[str, float] = {}
@@ -323,53 +305,6 @@ def mix_lattice_constant(
         "a_mixed": float(a_mixed),
     }
     return a_mixed, detail
-
-
-def _normalize_composition_dict(
-    composition: Mapping[str, float],
-    *,
-    tol: float = _COMPOSITION_SUM_TOL,
-) -> dict[str, float]:
-    """
-    組成辞書を検証し、正規化した辞書を返す。
-    """
-    if not isinstance(composition, Mapping) or len(composition) == 0:
-        raise ValueError("composition は1つ以上の項目を持つ dict[str, float] を指定してください。")
-
-    normalized: dict[str, float] = {}
-    total = 0.0
-
-    for key, value in composition.items():
-        if not isinstance(key, str):
-            raise TypeError("組成辞書のキーは str である必要があります。")
-        try:
-            fraction = float(value)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(f"組成比は数値である必要があります: key={key}") from exc
-        if fraction < 0:
-            raise ValueError(f"組成比は0以上である必要があります: {key}={value}")
-
-        symbol = key.capitalize()
-        normalized[symbol] = fraction
-        total += fraction
-
-    if not np.isclose(total, 1.0, atol=tol):
-        raise ValueError(
-            f"組成比の合計が1ではありません（現在: {total:.6f}）。許容誤差 {tol} 以内で1となるよう正規化してください。"
-        )
-
-    return normalized
-
-
-def _renormalize_composition(values: dict[str, float]) -> dict[str, float]:
-    """
-    値の合計が1になるように正規化する。合計が0の場合は例外。
-    """
-    clipped = {k: max(float(v), 0.0) for k, v in values.items()}
-    total = float(sum(clipped.values()))
-    if total <= 0:
-        raise ValueError("組成比の合計が0以下になりました。入力値を確認してください。")
-    return {k: val / total for k, val in clipped.items()}
 
 
 # 全原子に基板マスクを設定する
@@ -648,17 +583,17 @@ def substitute_elements(
         if n_targets == 0:
             replacement_symbols = []
         else:
-            # 合計の検証（許容誤差内で1）
-            total = float(sum(new.values()))
-            if not np.isclose(total, 1.0):
-                raise ValueError(f"組成の合計が1ではありません（現在: {total}）。")
-
-            # 元素記号の検証
-            symbols = list(new.keys())
+            normalized = normalize_composition(
+                new,
+                tol=_COMPOSITION_SUM_TOL,
+                keep_zero=True,
+                validate_symbols=True,
+                renormalize=False,
+            )
+            symbols = list(normalized.keys())
 
             # --- 丸めベースで個数を算出し、最後の元素に差分を集約 ---
-            counts = {s: int(round(n_targets * frac))
-                      for s, frac in new.items()}
+            counts = {s: int(round(n_targets * frac)) for s, frac in normalized.items()}
 
             # 丸め誤差の補正
             diff = n_targets - sum(counts.values())
@@ -789,8 +724,20 @@ def apply_layer_composition_gradient(
 
     num_groups = num_layers // group_size_layers
 
-    top_norm = _normalize_composition_dict(top_composition)
-    bottom_norm = _normalize_composition_dict(bottom_composition)
+    top_norm = normalize_composition(
+        top_composition,
+        tol=_COMPOSITION_SUM_TOL,
+        keep_zero=True,
+        validate_symbols=True,
+        renormalize=False,
+    )
+    bottom_norm = normalize_composition(
+        bottom_composition,
+        tol=_COMPOSITION_SUM_TOL,
+        keep_zero=True,
+        validate_symbols=True,
+        renormalize=False,
+    )
     all_elements = sorted(set(top_norm) | set(bottom_norm))
 
     # ---補完された組成を作成する
@@ -802,7 +749,13 @@ def apply_layer_composition_gradient(
             top_val = top_norm.get(element, 0.0)
             bottom_val = bottom_norm.get(element, 0.0)
             interpolated[element] = (1.0 - fraction) * top_val + fraction * bottom_val
-        normalized_comp = _renormalize_composition(interpolated)
+        normalized_comp = normalize_composition(
+            interpolated,
+            keep_zero=True,
+            validate_symbols=False,
+            renormalize=True,
+            clip_negative=True,
+        )
         group_compositions.append(normalized_comp)
 
     if inplace:
