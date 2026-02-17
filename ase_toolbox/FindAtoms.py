@@ -194,6 +194,58 @@ def get_neighbors(atoms: Atoms, target_atom: int | Atom, return_type: str = "ato
     else:
         return neighbor_indices.tolist()
 
+# 特定の原子・位置から近い順に、原子をリストにする
+def list_atoms_by_distance(
+    atoms: Atoms,
+    origin: Atom | int | Sequence[float],
+    return_type: Literal["atoms", "indices"] = "atoms",
+) -> list[Atom] | list[int]:
+    """
+    特定の原子・位置から近い順に、原子をリストにする
+
+    Args:
+        atoms (ase.Atoms): 原子構造を保持するASEのAtomsオブジェクト。
+        origin (Atom | int | Sequence[float]): 基準位置。原子インデックスまたは位置を指定。
+        return_type (Literal["atoms", "indices"], optional): 返却形式。
+            "atoms"   -> list[ase.Atom] 形式で返す（デフォルト）
+            "indices" -> 原子インデックス（list[int]）で返す
+
+    Returns:
+        list[ase.Atom] または list[int]:
+            原子のリスト。`return_type` に応じて形式が変わる。
+
+    Raises:
+        ValueError: return_type が "atoms" または "indices" 以外の場合。
+        ValueError: origin の座標次元が不正な場合。
+        IndexError: origin のインデックスが範囲外の場合。
+        TypeError: origin の型が不正な場合。
+    """
+    # --- return_type の検証 ---
+    if return_type not in ("atoms", "indices"):
+        raise ValueError("return_type は 'atoms' または 'indices' を指定してください。")
+
+    # ---originの型に応じて基準位置を取得する
+    if isinstance(origin, Atom):
+        origin_position = origin.position
+    elif isinstance(origin, int):
+        if origin < 0 or origin >= len(atoms):
+            raise IndexError(f"インデックス {origin} は範囲外です。")
+        origin_position = atoms[origin].position
+    elif isinstance(origin, Sequence) and not isinstance(origin, (str, bytes)):
+        origin_position = np.asarray(origin, dtype=float)
+        if origin_position.shape != (3,):
+            raise ValueError("origin は長さ3の座標を指定してください。")
+    else:
+        raise TypeError("origin は Atom / int / Sequence[float] を指定してください。")
+    # ---基準位置からの距離を計算する
+    distances = np.linalg.norm(atoms.positions - origin_position, axis=1)
+    # ---距離が近い順にソートする
+    sorted_indices = np.argsort(distances)
+    # ---出力形式に応じて返す
+    if return_type == "atoms":
+        return [atoms[i] for i in sorted_indices]
+    else:
+        return sorted_indices.tolist()
 
 # (平面用)層別に分ける・層ごとのlistにする
 def separate_layers(
