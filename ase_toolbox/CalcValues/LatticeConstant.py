@@ -14,8 +14,6 @@ from ase.build import bulk
 from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
 from ase.filters import UnitCellFilter
-from matlantis_features.ase_ext.optimize import FIRELBFGS
-
 
 from ..util import normalize_composition
 from ..HandleAtoms import substitute_elements
@@ -236,7 +234,7 @@ def calculate_lattice_constant_from_bulk(
     bulk_size: tuple[int, int, int] = (4, 4, 4),
     opt_fmax: float = 0.005,
     opt_maxsteps: int | None = None,
-    optimizer_cls: type[Optimizer] = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = None,
     crystal_structure: Literal["fcc", "bcc"] = "fcc",
 ) -> tuple[float, Atoms, LatticeConstant]:
     """バルクから格子定数を取得する
@@ -251,6 +249,7 @@ def calculate_lattice_constant_from_bulk(
         opt_fmax (float): 最適化のfmax。
         opt_maxsteps (int | None): 最適化の最大ステップ数。
         optimizer_cls (type[Optimizer]): 最適化に使用するクラス。
+            Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
         crystal_structure (Literal["fcc", "bcc"]): 結晶構造(hcpは未対応)。
 
     Returns:
@@ -264,7 +263,9 @@ def calculate_lattice_constant_from_bulk(
     bulk_atoms: Atoms = Atoms()
     if is_pre_vegard:
         # ---仮のベガード格子定数でバルクを作る
-        vegard_a = calculate_lattice_constant_from_vegard(composition, lattice_map=lattice_map)
+        vegard_a = calculate_lattice_constant_from_vegard(
+            composition, lattice_map=lattice_map
+        )
         bulk_atoms = bulk(
             major_element,
             a=vegard_a,
@@ -289,6 +290,17 @@ def calculate_lattice_constant_from_bulk(
         seed=seed,
     )
     # ---バルクを最適化し、格子定数を取得する
+    # Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用
+    if optimizer_cls is None:
+        try:
+            from matlantis_features.ase_ext.optimize import FIRELBFGS
+
+            optimizer_cls = FIRELBFGS
+        except ImportError:
+            from ase.optimize.fire import FIRE
+
+            optimizer_cls = FIRE
+
     bulk_atoms.calc = calculator
     unit_cell_filter = UnitCellFilter(bulk_atoms)
     opt_dyn = optimizer_cls(unit_cell_filter)

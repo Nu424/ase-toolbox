@@ -18,7 +18,6 @@ from ase import Atoms, Atom
 from ase.constraints import FixAtoms
 import numpy as np
 from numpy.typing import NDArray
-import re
 import warnings
 from .FindAtoms import (
     find_central_atom,

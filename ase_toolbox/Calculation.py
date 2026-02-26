@@ -18,7 +18,7 @@
 - optimize_lattice_constant(): 格子定数を最適化する
 """
 
-from typing import Literal, Optional, Any, Iterator
+from typing import Literal, Optional, Any, Callable
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,14 +26,14 @@ from ase import Atoms
 from ase.build import bulk, molecule
 from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
-from ase.neb import NEB
+
+try:
+    from ase.neb import NEB
+except ImportError:
+    from ase.mep.neb import NEB
 from ase.build.rotate import minimize_rotation_and_translation
 from ase.vibrations import Vibrations
 from ase.thermochemistry import IdealGasThermo, HarmonicThermo
-from ase.constraints import UnitCellFilter
-from pfp_api_client.pfp.calculators.ase_calculator import ASECalculator
-from pfp_api_client.pfp.estimator import Estimator
-from matlantis_features.ase_ext.optimize import FIRELBFGS
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
@@ -57,6 +57,7 @@ class CAEInput:
             指定時は構造最適化をスキップし、calculatorは不要。
         coefficient: 反応式における係数。エネルギーにこの値を掛けて合計する。
     """
+
     structure: Atoms
     calculator: Calculator | None = None
     energy_override: float | None = None
@@ -96,7 +97,7 @@ def calculate_adsorption_energy(
     adsorbed_structure_input: CAEInput,
     reactant_structures_input: list[CAEInput],
     *,
-    optimizer_cls: type[Optimizer] = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = None,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
     logger: Optional[ConditionalLogger] = None,
@@ -116,7 +117,7 @@ def calculate_adsorption_energy(
             例: [Cu表面, 0.5×H2分子] のリスト。
             各構造について `calculator` または `energy_override` のいずれかを指定する。
         optimizer_cls (type[Optimizer], optional): 構造最適化アルゴリズムのクラス。
-            デフォルトは FIRELBFGS。
+            Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
         opt_fmax (float, optional): 構造最適化の力の収束閾値[eV/Å]。デフォルトは 0.05。
         opt_maxsteps (int, optional): 構造最適化の最大ステップ数。デフォルトは 3000。
         logger (ConditionalLogger | None, optional): ログ出力制御。
@@ -173,6 +174,19 @@ def calculate_adsorption_energy(
         )
 
     # --- 1. 吸着後構造のエネルギー計算 ---
+
+    # --- 最適化方法の指定
+    # Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
+    if optimizer_cls is None:
+        try:
+            from matlantis_features.ase_ext.optimize import FIRELBFGS
+
+            optimizer_cls = FIRELBFGS
+        except ImportError:
+            from ase.optimize.fire import FIRE
+
+            optimizer_cls = FIRE
+
     if adsorbed_structure_input.energy_override is not None:
         # ---エネルギーを直接指定する場合
         e_adsorbed = float(adsorbed_structure_input.energy_override)
@@ -258,9 +272,7 @@ def calculate_adsorption_energy(
             f"  反応物{i+1} ({symbols}): {e:.6f} eV × 係数{coeff:.6f} = {weighted:.6f} eV"
         )
     logger.info(f"反応物合計エネルギー(未係数): {e_reactants_total:.6f} eV")
-    logger.info(
-        f"反応物合計エネルギー(係数適用): {e_reactants_weighted_total:.6f} eV"
-    )
+    logger.info(f"反応物合計エネルギー(係数適用): {e_reactants_weighted_total:.6f} eV")
     logger.info(f"吸着エネルギー: {e_adsorption:.6f} eV")
     if e_adsorption < 0:
         logger.info("→ 吸着は熱力学的に有利")
@@ -451,7 +463,7 @@ def calculate_formation_energy(
     calculator: Calculator,
     compound_structure: Atoms,
     *,
-    optimizer_cls: type[Optimizer] = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = None,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
     reference_crystal_structures: Optional[dict[str, str]] = None,
@@ -471,7 +483,7 @@ def calculate_formation_energy(
             一般的に EstimatorCalcMode.CRYSTAL_U0 を使用。
         compound_structure (Atoms): 化合物の原子構造。
         optimizer_cls (type[Optimizer], optional): 構造最適化アルゴリズムのクラス。
-            デフォルトは FIRELBFGS。
+            Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
         opt_fmax (float, optional): 構造最適化の力の収束閾値[eV/Å]。デフォルトは 0.05。
         opt_maxsteps (int, optional): 構造最適化の最大ステップ数。デフォルトは 3000。
         reference_crystal_structures (dict[str, str] | None, optional):
@@ -518,6 +530,18 @@ def calculate_formation_energy(
     logger.info(
         f"化合物構造: {compound_structure.symbols} ({len(compound_structure)} 原子)"
     )
+
+    # --- 最適化方法の指定
+    # Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
+    if optimizer_cls is None:
+        try:
+            from matlantis_features.ase_ext.optimize import FIRELBFGS
+
+            optimizer_cls = FIRELBFGS
+        except ImportError:
+            from ase.optimize.fire import FIRE
+
+            optimizer_cls = FIRE
 
     # --- 1. 化合物の元素組成解析 ---
     composition = analyze_composition(compound_structure)
@@ -636,7 +660,7 @@ def run_neb(
     final_atoms: Atoms,
     num_intermediate_images: int,
     optimizer_cls: type[Optimizer],
-    estimator: Estimator,
+    calculator_factory: Callable[[], Calculator],
     *,
     fmax: float = 0.05,
     steps: int = 500,
@@ -648,7 +672,7 @@ def run_neb(
     mic: bool | None = None,
     interpolate_kwargs: dict[str, Any] | None = None,
 ) -> tuple[list[Atoms], list[float]]:
-    """NEB計算を実行し、構造とエネルギーのリストを返す。Matlantis環境用。
+    """NEB計算を実行し、構造とエネルギーのリストを返す。
 
     初期構造と最終構造を指定して、指定された数の中間構造を生成し、
     NEB計算を実行します。計算後の全構造とそれぞれのエネルギーを返します。
@@ -658,7 +682,16 @@ def run_neb(
         final_atoms: 最終構造。
         num_intermediate_images: 中間構造の数（端点は含まない）。
         optimizer_cls: 使用するオプティマイザーのクラス（例: FIRE, BFGS）。
-        estimator: 計算器作成に使用するEstimatorオブジェクト。
+        calculator_factory: NEBに使用する計算器を返すファクトリー関数。
+            `parallel=False` のときは1回だけ呼ばれ、全画像で共有される。
+            `parallel=True` のときは画像ごとに呼ばれる。
+            例（ASECalculatorを使う場合）:
+                ```python
+                from pfp_api_client.pfp.calculators.ase_calculator import ASECalculator
+                from pfp_api_client.pfp.estimator import Estimator
+                estimator = Estimator(...)
+                calculator_factory = lambda: ASECalculator(estimator)
+                ```
         fmax: 収束判定の力の閾値 [eV/Å]。デフォルトは0.05。
         steps: 最大最適化ステップ数。デフォルトは500。
         trajectory_path: 軌跡を保存するファイルパス。Noneの場合は保存しない。
@@ -675,6 +708,7 @@ def run_neb(
 
     Raises:
         ValueError: 構造の原子数が一致しない、または中間構造数が負の場合。
+        TypeError: calculator_factory が呼び出し可能オブジェクトでない場合。
     """
     # 入力検証
     if len(init_atoms) != len(final_atoms):
@@ -687,6 +721,9 @@ def run_neb(
         raise ValueError(
             f"中間構造数は0以上である必要があります: {num_intermediate_images}"
         )
+
+    if not callable(calculator_factory):
+        raise TypeError("calculator_factory は呼び出し可能オブジェクトである必要があります。")
 
     # 構造のアライメント（回転・並進最適化）
     if pre_align:
@@ -703,13 +740,13 @@ def run_neb(
     # 計算器の設定
     if allow_shared_calculator:
         # 計算器を共有する場合（parallel=False）
-        calculator = ASECalculator(estimator)
+        calculator = calculator_factory()
         for image in images:
             image.calc = calculator
     else:
         # 各画像に個別の計算器を作成する場合（parallel=True）
         for image in images:
-            calculator = ASECalculator(estimator)
+            calculator = calculator_factory()
             image.calc = calculator
 
     # NEB オブジェクトの構築
@@ -877,7 +914,7 @@ def calculate_gibbs_free_energy(
     *,
     temperature: float = 298.15,
     pressure: float = 101325.0,
-    optimizer_cls: type[Optimizer] = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = None,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
     logger: Optional[ConditionalLogger] = None,
@@ -894,7 +931,8 @@ def calculate_gibbs_free_energy(
         calc_input (CGFEInput): 計算する構造、振動させる分子のインデックス、計算モード
         temperature (float): 温度[K]
         pressure (float): 圧力[Pa]
-        optimizer_cls (type[Optimizer]): 最適化エンジンのクラス
+        optimizer_cls (type[Optimizer]): 最適化エンジンのクラス。
+            Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
         opt_fmax (float): 最適化の閾値
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
@@ -935,6 +973,18 @@ def calculate_gibbs_free_energy(
                 )
     else:
         logger.info("拘束条件: なし")
+
+    # --- 最適化方法の指定
+    # Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
+    if optimizer_cls is None:
+        try:
+            from matlantis_features.ase_ext.optimize import FIRELBFGS
+
+            optimizer_cls = FIRELBFGS
+        except ImportError:
+            from ase.optimize.fire import FIRE
+
+            optimizer_cls = FIRE
 
     # ---　1. 最適化
     if calc_input.do_opt:
@@ -1083,7 +1133,7 @@ def calculate_delta_g(
     pressure: float = 101325.0,
     electrode_potential: float = 0.0,
     pH: float = 7.0,
-    optimizer_cls: type[Optimizer] = FIRELBFGS,
+    optimizer_cls: type[Optimizer] = None,
     opt_fmax: float = 0.05,
     opt_maxsteps: int = 3000,
     logger: Optional[ConditionalLogger] = None,
@@ -1103,7 +1153,8 @@ def calculate_delta_g(
         pressure (float): 圧力[Pa]
         electrode_potential (float): 電極電位（V vs SHE）
         pH (float): pH
-        optimizer_cls (type[Optimizer]): 最適化エンジンのクラス
+        optimizer_cls (type[Optimizer]): 最適化エンジンのクラス。
+            Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
         opt_fmax (float): 最適化の閾値
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
@@ -1113,6 +1164,16 @@ def calculate_delta_g(
     Returns:
         float: 反応物と生成物のギブス自由エネルギーの差(ΔG)
     """
+    # --- 最適化方法の指定
+    if optimizer_cls is None:
+        try:
+            from matlantis_features.ase_ext.optimize import FIRELBFGS
+
+            optimizer_cls = FIRELBFGS
+        except ImportError:
+            from ase.optimize.fire import FIRE
+
+            optimizer_cls = FIRE
     # --- ログ設定 ---
     logger = ensure_logger("delta_g", enable_logging, logger)
 
