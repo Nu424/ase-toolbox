@@ -38,7 +38,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from .util import ConditionalLogger, ensure_logger, optimize_and_get_energy
+from .util import (
+    ConditionalLogger,
+    create_optimizer,
+    ensure_logger,
+    optimize_and_get_energy,
+)
 
 
 # ----------
@@ -103,6 +108,7 @@ def calculate_adsorption_energy(
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
     copy_atoms: bool = True,
+    display_log: bool = True,
 ) -> CAEOutput:
     """
     吸着エネルギーを計算する。
@@ -124,6 +130,7 @@ def calculate_adsorption_energy(
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
         copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
+        display_log (bool, optional): True のときオプティマイザのステップログを標準出力へ出す。False のとき抑制する。
 
     Returns:
         CAEOutput: 計算結果をまとめたデータクラス。
@@ -211,6 +218,7 @@ def calculate_adsorption_energy(
             label="吸着後構造",
             logger=logger,
             copy_atoms=False,
+            display_log=display_log,
         )
 
     # --- 2. 各反応物構造のエネルギー計算 ---
@@ -246,6 +254,7 @@ def calculate_adsorption_energy(
                 label=label,
                 logger=logger,
                 copy_atoms=False,
+                display_log=display_log,
             )
 
         reactant_energies.append(e_reactant)
@@ -471,6 +480,7 @@ def calculate_formation_energy(
     logger: Optional[ConditionalLogger] = None,
     enable_logging: bool = True,
     copy_atoms: bool = True,
+    display_log: bool = True,
 ) -> float:
     """
     金属の生成エネルギーを計算する。
@@ -496,6 +506,7 @@ def calculate_formation_energy(
             Noneの場合は新規作成。
         enable_logging (bool, optional): ログ出力の有効/無効。デフォルトは True。
         copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
+        display_log (bool, optional): True のときオプティマイザのステップログを標準出力へ出す。False のとき抑制する。
 
     Returns:
         float: 生成エネルギー[eV]。負の値は化合物形成が熱力学的に有利であることを示す。
@@ -559,6 +570,7 @@ def calculate_formation_energy(
         label="化合物構造",
         logger=logger,
         copy_atoms=copy_atoms,
+        display_log=display_log,
     )
 
     # --- 3. 各純元素のエネルギー計算 ---
@@ -599,6 +611,7 @@ def calculate_formation_energy(
                 label=f"純元素 {element}",
                 logger=logger,
                 copy_atoms=copy_atoms,
+                display_log=display_log,
             )
 
             # 原子あたりのエネルギーに正規化
@@ -671,6 +684,7 @@ def run_neb(
     parallel: bool = False,
     mic: bool | None = None,
     interpolate_kwargs: dict[str, Any] | None = None,
+    display_log: bool = True,
 ) -> tuple[list[Atoms], list[float]]:
     """NEB計算を実行し、構造とエネルギーのリストを返す。
 
@@ -702,6 +716,7 @@ def run_neb(
                  Falseの場合は計算器を共有。デフォルトはFalse。
         mic: 最短イメージ規約を使用するか。Noneの場合は自動判定。
         interpolate_kwargs: interpolateメソッドに渡す追加の引数。
+        display_log: True のときオプティマイザのステップログを標準出力へ出す。False のとき抑制する。
 
     Returns:
         tuple[list[Atoms], list[float]]: 計算後の構造リストとエネルギーリスト [eV]。
@@ -766,9 +781,14 @@ def run_neb(
 
     # 最適化の実行
     if trajectory_path is not None:
-        optimizer = optimizer_cls(neb, trajectory=trajectory_path)
+        optimizer = create_optimizer(
+            optimizer_cls,
+            neb,
+            display_log=display_log,
+            trajectory=trajectory_path,
+        )
     else:
-        optimizer = optimizer_cls(neb)
+        optimizer = create_optimizer(optimizer_cls, neb, display_log=display_log)
 
     optimizer.run(fmax=fmax, steps=steps)
 
@@ -921,6 +941,7 @@ def calculate_gibbs_free_energy(
     enable_logging: bool = True,
     cleanup_vibrations: bool = True,
     copy_atoms: bool = True,
+    display_log: bool = True,
 ):
     """
     ギブス自由エネルギーを計算する。
@@ -936,8 +957,10 @@ def calculate_gibbs_free_energy(
         opt_fmax (float): 最適化の閾値
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
+        enable_logging (bool): 関数内ロガーを有効にするかどうか。
         cleanup_vibrations (bool): 振動計算後にファイルをクリーンアップするか
         copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
+        display_log (bool, optional): True のときオプティマイザのステップログを標準出力へ出す。False のとき抑制する。
 
     Returns:
         float: ギブス自由エネルギー。Δではない。
@@ -997,6 +1020,7 @@ def calculate_gibbs_free_energy(
             label=f"構造最適化: {atoms.symbols}",
             logger=logger,
             copy_atoms=copy_atoms,
+            display_log=display_log,
         )
     else:
         logger.info("構造最適化はスキップされました (do_opt=False)。")
@@ -1140,6 +1164,7 @@ def calculate_delta_g(
     enable_logging: bool = True,
     cleanup_vibrations: bool = True,
     copy_atoms: bool = True,
+    display_log: bool = True,
 ):
     """
     ギブス自由エネルギーを計算する。CHEモデルに対応している
@@ -1158,8 +1183,10 @@ def calculate_delta_g(
         opt_fmax (float): 最適化の閾値
         opt_maxsteps (int): 最適化の最大ステップ数
         logger (ConditionalLogger): ロガー。Noneの場合はログを出力しない
+        enable_logging (bool): 関数内ロガーを有効にするかどうか。
         cleanup_vibrations (bool): 振動計算後にファイルをクリーンアップするか
         copy_atoms (bool, optional): 原子構造をコピーするかどうか。Falseの場合は、入力の原子構造をそのまま使用する。デフォルトは True。
+        display_log (bool, optional): True のときオプティマイザのステップログを標準出力へ出す。False のとき抑制する。
 
     Returns:
         float: 反応物と生成物のギブス自由エネルギーの差(ΔG)
@@ -1212,8 +1239,10 @@ def calculate_delta_g(
             opt_fmax=opt_fmax,
             opt_maxsteps=opt_maxsteps,
             logger=logger,
+            enable_logging=enable_logging,
             cleanup_vibrations=cleanup_vibrations,
             copy_atoms=copy_atoms,
+            display_log=display_log,
         )
 
         # CHEモデル計算の各項
@@ -1254,8 +1283,10 @@ def calculate_delta_g(
                 opt_fmax=opt_fmax,
                 opt_maxsteps=opt_maxsteps,
                 logger=logger,
+                enable_logging=enable_logging,
                 cleanup_vibrations=cleanup_vibrations,
                 copy_atoms=copy_atoms,
+                display_log=display_log,
             )
             reactants_gs.append(g)
 
@@ -1278,8 +1309,10 @@ def calculate_delta_g(
                 opt_fmax=opt_fmax,
                 opt_maxsteps=opt_maxsteps,
                 logger=logger,
+                enable_logging=enable_logging,
                 cleanup_vibrations=cleanup_vibrations,
                 copy_atoms=copy_atoms,
+                display_log=display_log,
             )
             products_gs.append(g)
 

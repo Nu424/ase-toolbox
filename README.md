@@ -282,6 +282,12 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - ↩️ 戻り値: `float`（Å）。`return_detail=True` で `(a, detail_dict)`。
   - 📝 メモ: 体積混合は立方晶想定。bcc/hcp を含む場合は注意喚起を出します。
 
+- **calculate_lattice_constant_from_bulk(composition, calculator, is_pre_vegard=False, lattice_map=None, seed=None, bulk_size=(4,4,4), opt_fmax=0.005, opt_maxsteps=None, optimizer_cls=None, crystal_structure="fcc", display_log=True)**
+  - 🧩 何をする: バルクを作成・最適化して、格子定数を見積もる。
+  - 🔧 主な引数: `composition`, `calculator`, `bulk_size`, `opt_fmax`, `opt_maxsteps`, `optimizer_cls`, `crystal_structure`, `display_log`。
+  - ↩️ 戻り値: `(calculated_a, bulk_atoms, raw_lattice_constant)`。
+  - 📝 メモ: `display_log=False` にすると、セル最適化中のオプティマイザ標準出力を抑制できます。
+
 ### BuildSolvent.py（溶媒化の構築）
 - **ComponentSpec(name, concentration_mol_L, molecule)**（dataclass）
   - 🧩 何をする: 成分名・濃度（mol/L）・分子指定（SMILES/Atoms/ファイルパス）を保持。
@@ -309,17 +315,18 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 ### Calculation.py（エネルギー・NEB・熱化学）
 - データクラス: **CAEInput(structure, calculator=None, energy_override=None, coefficient=1.0)**, **CAEOutput(...)**, **CGFEInput(...)**, **LatticeConstant(a,b,c,alpha,beta,gamma)**
 
-- **calculate_adsorption_energy(adsorbed_structure_input, reactant_structures_input, optimizer_cls=FIRELBFGS, opt_fmax=0.05, opt_maxsteps=3000, logger=None, enable_logging=True, copy_atoms=True) -> CAEOutput**
+- **calculate_adsorption_energy(adsorbed_structure_input, reactant_structures_input, optimizer_cls=None, opt_fmax=0.05, opt_maxsteps=3000, logger=None, enable_logging=True, copy_atoms=True, display_log=True) -> CAEOutput**
   - 🧩 何をする: 吸着後構造と反応物群をそれぞれ最適化（またはエネルギーを直接指定）し、係数付きで吸着エネルギーを算出する。
   - 🗺️ 場面: 分子/固体の混在系での吸着評価（Matlantis計算を想定）。
   - 🔧 主な引数:
     - `adsorbed_structure_input (CAEInput)`: 吸着後構造。`calculator` または `energy_override` のいずれかを指定。
     - `reactant_structures_input (list[CAEInput])`: 反応物群。各項目で `calculator` / `energy_override` / `coefficient` を個別指定可能。
-    - `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `logger`, `enable_logging`, `copy_atoms`。
+    - `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `logger`, `enable_logging`, `copy_atoms`, `display_log`。
   - ↩️ 戻り値: `CAEOutput`。吸着エネルギー（`adsorption_energy`）に加え、最適化後構造や個別エネルギー、係数情報を保持。
   - 📝 ヒント:
     - `energy_override`: 既知のエネルギーを再利用する場合に指定（最適化をスキップ）。
     - `coefficient`: 反応式係数を設定（例: 0.5×H2 を表現する場合は `coefficient=0.5`）。
+    - `display_log=False`: ASE/Matlantis のオプティマイザが標準出力へ出すステップログを抑制。
     - `CAEOutput` には `optimized_adsorbed`, `optimized_reactants`, `reactant_weighted_energies` などが含まれるため、後処理で利用しやすい。
   - 💡 使用例:
     ```python
@@ -342,6 +349,7 @@ ASEを使った化学シミュレーションをサクッと進めるための�
         opt_fmax=0.05,
         opt_maxsteps=3000,
         enable_logging=True,
+        display_log=False,
     )
 
     print(f"吸着エネルギー: {result.adsorption_energy:.3f} eV")
@@ -351,15 +359,17 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🧩 何をする: 元素組成の辞書作成 / 純元素参照構造（fcc/bcc/hcp自動判別も可）の生成。
   - 🔧 引数の例: `element (str)`, `crystal_structure ("auto"|"fcc"|"bcc"|"hcp")`, `lattice_parameter (float|None)`。
 
-- **calculate_formation_energy(calculator, compound_structure, optimizer_cls, opt_fmax, opt_maxsteps, reference_crystal_structures=None, reference_lattice_parameters=None, logger=None, enable_logging=True, copy_atoms=True)**
+- **calculate_formation_energy(calculator, compound_structure, optimizer_cls=None, opt_fmax=0.05, opt_maxsteps=3000, reference_crystal_structures=None, reference_lattice_parameters=None, logger=None, enable_logging=True, copy_atoms=True, display_log=True)**
   - 🧩 何をする: 化合物のエネルギーと、純元素参照エネルギー（原子あたり）から生成エネルギー。
-  - 🔧 主な引数: `calculator`, `compound_structure (ase.Atoms)`, 参照構造の上書き辞書など, `copy_atoms`。
+  - 🔧 主な引数: `calculator`, `compound_structure (ase.Atoms)`, 参照構造の上書き辞書など, `copy_atoms`, `display_log`。
   - ↩️ 戻り値: `float`（eV、負なら形成有利）。
+  - 📝 メモ: `display_log=False` にすると、化合物構造・純元素構造の最適化ステップ出力を抑制できます。
 
-- **run_neb(init_atoms, final_atoms, num_intermediate_images, optimizer_cls, estimator, fmax=0.05, steps=500, trajectory_path=None, pre_align=True, k=0.1, climb=True, parallel=False, mic=None, interpolate_kwargs=None)**
-  - 🧩 何をする: NEBを実行して全画像とエネルギーを返す（Matlantisの `Estimator` を想定）。
-  - 🔧 主な引数: `init_atoms`, `final_atoms`, `num_intermediate_images (int)`, `optimizer_cls`, `estimator`, `fmax`, `steps`, `trajectory_path`, `pre_align`, `k`, `climb`, `parallel`, `mic`, `interpolate_kwargs`。
+- **run_neb(init_atoms, final_atoms, num_intermediate_images, optimizer_cls, calculator_factory, fmax=0.05, steps=500, trajectory_path=None, pre_align=True, k=0.1, climb=True, parallel=False, mic=None, interpolate_kwargs=None, display_log=True)**
+  - 🧩 何をする: NEBを実行して全画像とエネルギーを返す。
+  - 🔧 主な引数: `init_atoms`, `final_atoms`, `num_intermediate_images (int)`, `optimizer_cls`, `calculator_factory`, `fmax`, `steps`, `trajectory_path`, `pre_align`, `k`, `climb`, `parallel`, `mic`, `interpolate_kwargs`, `display_log`。
   - ↩️ 戻り値: `(images: list[ase.Atoms], energies: list[float])`。
+  - 📝 メモ: `display_log=False` にすると、NEB最適化のステップ出力を抑制できます。
 
 - **plot_energy_profile(energies, ax=None, xlabel="replica", ylabel="energy [eV]", title=None, show=True)**
   - 📈 何をする: エネルギープロファイルを簡単プロット。
@@ -371,18 +381,25 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `energies (Sequence[float])`。
   - ↩️ 戻り値: `(ts_index: int, e_forward: float, e_backward: float)`。
 
-- **calculate_gibbs_free_energy(calculator_molecule, calculator_solid, calc_input, temperature=298.15, pressure=101325.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True, copy_atoms=True)**
+- **calculate_gibbs_free_energy(calculator_molecule, calculator_solid, calc_input, temperature=298.15, pressure=101325.0, optimizer_cls=None, opt_fmax=0.05, opt_maxsteps=3000, logger=None, enable_logging=True, cleanup_vibrations=True, copy_atoms=True, display_log=True)**
   - 🧩 何をする: 構造最適化＋振動解析→IdealGasThermo/HarmonicThermoで G（またはF）を評価。
   - 🔧 主な引数:
     - `calculator_molecule / calculator_solid (Calculator)`。
     - `calc_input (CGFEInput)`: 振動対象・モードなどを含む入力。
-    - `temperature (K)`, `pressure (Pa)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `cleanup_vibrations`, `copy_atoms` ほか。
+    - `temperature (K)`, `pressure (Pa)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `cleanup_vibrations`, `copy_atoms`, `display_log` ほか。
   - ↩️ 戻り値: `float`（ギブス自由エネルギー。Δではなく個別G）。
+  - 📝 メモ: `display_log=False` にすると、構造最適化時の標準出力ログを抑制できます。
 
-- **calculate_delta_g(calculator_molecule, calculator_solid, reactants, products, temperature=298.15, pressure=101325.0, electrode_potential=0.0, pH=7.0, optimizer_cls, opt_fmax, opt_maxsteps, logger=None, enable_logging=True, cleanup_vibrations=True, copy_atoms=True)**
+- **calculate_delta_g(calculator_molecule, calculator_solid, reactants, products, temperature=298.15, pressure=101325.0, electrode_potential=0.0, pH=7.0, optimizer_cls=None, opt_fmax=0.05, opt_maxsteps=3000, logger=None, enable_logging=True, cleanup_vibrations=True, copy_atoms=True, display_log=True)**
   - 🧩 何をする: 反応物と生成物の総G差（ΔG）を返す。`"CHE"` 指定でCHEモデル（0.5·G(H2) − e·U + kBT·ln10·pH）。
-  - 🔧 主な引数: `reactants/products (list[CGFEInput | "CHE"])`, `electrode_potential (V vs SHE)`, `pH`, 温度・圧力など, `copy_atoms`。
+  - 🔧 主な引数: `reactants/products (list[CGFEInput | "CHE"])`, `electrode_potential (V vs SHE)`, `pH`, 温度・圧力など, `copy_atoms`, `display_log`。
   - ↩️ 戻り値: `float`（eV）。
+  - 📝 メモ: `display_log=False` にすると、内部で呼ばれる各最適化のステップ出力をまとめて抑制できます。
+
+- **ログ制御の使い分け**
+  - `enable_logging`: `ase_toolbox` 側のロガー出力（ファイル/コンソールの情報ログ）をON/OFF。
+  - `display_log`: ASE/Matlantis のオプティマイザが標準出力へ出すステップログをON/OFF。
+  - 例: 「計算の要点ログは残したいが、最適化ステップは静かにしたい」場合は `enable_logging=True, display_log=False`。
 
 - **optimize_lattice_constant(atoms, calculator=None, optimizer_cls=FIRELBFGS, opt_fmax=0.01, opt_maxsteps=None, copy_atoms=True)**
   - 🧩 何をする: `UnitCellFilter` でセル形状・体積を最適化し、格子定数を返す。
@@ -392,11 +409,14 @@ ASEを使った化学シミュレーションをサクッと進めるための�
 ### util.py（ユーティリティ）
 - **ConditionalLogger / ensure_logger / setup_logger**
   - 🧩 何をする: ログ出力を簡単にON/OFFしつつ、ファイル/コンソールへ整形出力。
-- **optimize_and_get_energy(atoms, calculator, optimizer_cls, fmax, maxsteps, label, logger, copy_atoms=True)**
+- **create_optimizer(optimizer_cls, target, display_log=True, **kwargs)**
+  - 🧩 何をする: オプティマイザ生成時に、標準出力ログの抑制有無を共通的に切り替える。
+  - 🔧 主な引数: `optimizer_cls`, `target`, `display_log`, `**kwargs`。
+- **optimize_and_get_energy(atoms, calculator, optimizer_cls, fmax, maxsteps, label, logger, copy_atoms=True, display_log=True)**
   - 🧩 何をする: 構造最適化を実行し、最終エネルギーを返す（ログ込み）。
-  - 🔧 主な引数: `atoms`, `calculator`, `optimizer_cls`, `fmax`, `maxsteps`, `label`, `logger`, `copy_atoms`。
+  - 🔧 主な引数: `atoms`, `calculator`, `optimizer_cls`, `fmax`, `maxsteps`, `label`, `logger`, `copy_atoms`, `display_log`。
   - ↩️ 戻り値: `float`（eV）。
-  - 📝 メモ: 原子数が1の場合は最適化しても常に0 eVとなるため、警告ログが出力される。
+  - 📝 メモ: 原子数が1の場合は最適化しても常に0 eVとなるため、警告ログが出力される。`display_log=False` で最適化ステップの標準出力は抑制可能。
 - **resolve_target_indices(base_atoms, target)**
   - 🧩 何をする: 多様なターゲット指定（int/Atom/Atoms/list）をインデックス配列に正規化。
   - 🔧 主な引数: `base_atoms (ase.Atoms)`, `target (様々な型に対応)`。

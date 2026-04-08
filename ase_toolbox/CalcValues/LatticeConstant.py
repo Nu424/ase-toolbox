@@ -15,7 +15,7 @@ from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
 from ase.filters import UnitCellFilter
 
-from ..util import normalize_composition
+from ..util import create_optimizer, normalize_composition
 from ..HandleAtoms import substitute_elements
 
 
@@ -236,6 +236,7 @@ def calculate_lattice_constant_from_bulk(
     opt_maxsteps: int | None = None,
     optimizer_cls: type[Optimizer] = None,
     crystal_structure: Literal["fcc", "bcc"] = "fcc",
+    display_log: bool = True,
 ) -> tuple[float, Atoms, LatticeConstant]:
     """バルクから格子定数を取得する
 
@@ -251,6 +252,7 @@ def calculate_lattice_constant_from_bulk(
         optimizer_cls (type[Optimizer]): 最適化に使用するクラス。
             Noneの場合、1. Matlantis環境ならFIRELBFGSを使用、2. それ以外ならFIREを使用。
         crystal_structure (Literal["fcc", "bcc"]): 結晶構造(hcpは未対応)。
+        display_log (bool): True のときオプティマイザのステップログを標準出力へ出す。False のとき抑制する。
 
     Returns:
         tuple[float, Atoms, LatticeConstant]: 計算された格子定数、バルク構造、バルクから求めたままの格子定数オブジェクト。
@@ -303,7 +305,11 @@ def calculate_lattice_constant_from_bulk(
 
     bulk_atoms.calc = calculator
     unit_cell_filter = UnitCellFilter(bulk_atoms)
-    opt_dyn = optimizer_cls(unit_cell_filter)
+    opt_dyn = create_optimizer(
+        optimizer_cls,
+        unit_cell_filter,
+        display_log=display_log,
+    )
     if opt_maxsteps is not None:
         opt_dyn.run(fmax=opt_fmax, steps=opt_maxsteps)
     else:

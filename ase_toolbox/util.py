@@ -2,7 +2,7 @@ from datetime import datetime
 import math
 import logging
 import re
-from typing import Optional, Mapping
+from typing import Any, Optional, Mapping
 from ase import Atoms, Atom
 from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
@@ -105,6 +105,35 @@ def ensure_logger(
 
 
 # ----------
+# ---オプティマイザ生成
+# ----------
+def create_optimizer(
+    optimizer_cls: type[Optimizer],
+    target: Any,
+    *,
+    display_log: bool = True,
+    **kwargs: Any,
+) -> Optimizer:
+    """
+    オプティマイザを生成する。
+
+    Args:
+        optimizer_cls: 使用するオプティマイザクラス。
+        target: オプティマイズ対象。
+        display_log: True のとき標準出力へステップログを出す。False のとき抑制する。
+        **kwargs: オプティマイザへ渡す追加引数。
+
+    Returns:
+        Optimizer: 生成したオプティマイザ。
+    """
+    optimizer_kwargs = dict(kwargs)
+    if not display_log:
+        optimizer_kwargs["logfile"] = None
+
+    return optimizer_cls(target, **optimizer_kwargs)
+
+
+# ----------
 # ---構造最適化をひとまとめに
 # ----------
 def optimize_and_get_energy(
@@ -117,6 +146,7 @@ def optimize_and_get_energy(
     logger: ConditionalLogger,
     *,
     copy_atoms: bool = True,
+    display_log: bool = True,
 ) -> float:
     """
     構造最適化をおこない、最適化後のエネルギーを取得する。
@@ -130,6 +160,7 @@ def optimize_and_get_energy(
         label: ログ出力用のラベル。
         logger: ロガー。
         copy_atoms: Trueの場合、atomsをコピーして処理。Falseの場合は直接変更。
+        display_log: True のときオプティマイザのステップログを標準出力へ出す。
 
     Returns:
         float: 最適化後のポテンシャルエネルギー [eV]。
@@ -174,7 +205,7 @@ def optimize_and_get_energy(
 
     # 構造最適化実行
     logger.info("構造最適化開始")
-    opt = optimizer_cls(work_atoms)
+    opt = create_optimizer(optimizer_cls, work_atoms, display_log=display_log)
     opt.run(fmax=fmax, steps=maxsteps)
     logger.info("構造最適化完了")
 
