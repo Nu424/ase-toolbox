@@ -992,6 +992,358 @@ def _compute_rotation_matrix(
     return R
 
 
+def resolve_surface_site(
+    substrate: Atoms,
+    position: Literal["top", "bridge", "hollow"],
+    *,
+    target_atom: int | Atom | None = None,
+    z_tolerance: float = 0.3,
+    allow_search_surface_atom: bool = True,
+    use_substrate_mask: Literal["auto", True, False] = "auto",
+) -> dict[str, Any]:
+    """表面上の吸着サイトを解決し、配置に必要な情報を返す。
+
+    Args:
+        substrate (ase.Atoms): 基板となる原子構造。
+        position (Literal["top", "bridge", "hollow"]): 吸着分子の位置。
+        target_atom (int | ase.Atom | None): 基準となる基板上の原子。
+            インデックスまたはAtomオブジェクトを指定可能。Noneの場合は重心に最も近い原子を探す。
+        z_tolerance (float): 表面層を検出する際の z 許容幅 [Å]。デフォルトは 0.3 Å。
+        allow_search_surface_atom (bool): target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探すかどうか。Falseの場合はエラーを返す。
+        use_substrate_mask (Literal["auto", True, False]): 基板マスクの使用設定。
+            "auto": substrate.arrays に "is_substrate" が存在する場合、基板原子のみで層検出と高さ基準を決定。
+            True: 基板マスクを使用（存在しない場合は全原子）。
+            False: マスクを無視して全原子を対象。
+           デフォルトは "auto"。複数の吸着分子を配置する場合、set_substrate_mask_all() で
+            事前に基板マスクを設定し、このパラメータを "auto" または True にすることで、
+            既存の吸着分子の影響を受けずに正しく配置できます。
+
+    Returns:
+        dict[str, Any]: 吸着サイトの情報。
+        "position": 吸着サイトの位置。
+        "target_atom_index": 基準となる原子のインデックス。
+        "site_atom_indices": 吸着サイトに含まれる原子のインデックス。
+        "site_atom_elements": 吸着サイトに含まれる原子の元素。
+        "site_position": 吸着サイトの位置。
+        "position_xy": 吸着サイトの位置のxy座標。
+        "z_top": 吸着サイトの位置のz座標。
+    """
+    # ---(準備)target_atomを、Atom|Noneにする
+    if isinstance(target_atom, int):
+        target_atom_index: int | None = target_atom
+        target_atom_obj: Atom | None = substrate[target_atom]
+    elif isinstance(target_atom, Atom):
+        target_atom_index = target_atom.index
+        target_atom_obj = target_atom
+    elif target_atom is None:
+        target_atom_index = None
+        target_atom_obj = None
+    else:
+        raise TypeError(
+            "target_atom は int または ase.Atom または None を指定してください。"
+        )
+
+    # ---表面原子を取得する（基板マスク適用）
+    layers: list[list[Atom]] = separate_layers(
+        substrate,
+        z_tolerance=z_tolerance,
+        return_type="atoms",
+        use_substrate_mask=use_substrate_mask,
+    )
+    if not layers:
+        raise ValueError("表面層を検出できません。")
+
+    top_layer: list[Atom] = layers[-1]
+    top_layer_indices = [atom.index for atom in top_layer]
+
+    # ---target_atomを決定する
+    if target_atom_obj is None:
+        # target_atomがNoneの場合、重心に最も近い原子を探す
+        target_atom_obj = find_central_atom(top_layer)
+        target_atom_index = target_atom_obj.index
+    elif target_atom_index not in top_layer_indices:
+        # target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探す
+        if allow_search_surface_atom:
+            target_atom_obj = min(
+                top_layer,
+                key=lambda atom: np.linalg.norm(
+                    atom.position[:2] - target_atom_obj.position[:2]
+                ),
+            )
+            target_atom_index = target_atom_obj.index
+        else:
+            raise ValueError("指定された原子は表面に存在しません。")
+
+    # ---positionから、xy座標を取得する
+    site_atom_indices: list[int] = []
+
+    if position == "top":
+        position_xy = target_atom_obj.position[:2]
+        site_atom_indices = [target_atom_obj.index]
+    elif position in ("bridge", "hollow"):
+        # 表面上で、target_atomの隣接原子を探す
+        target_atom_neighbors = get_neighbors(
+            substrate,
+            target_atom_obj,
+            return_type="atoms",
+        )
+        # 表面上の隣接原子のみを残す（z_tolerance で判定）
+        target_atom_neighbors = sorted(
+            [
+                neighbor
+                for neighbor in target_atom_neighbors
+                if abs(neighbor.position[2] - target_atom_obj.position[2])
+                <= z_tolerance
+            ],
+            key=lambda atom: atom.index,
+        )
+        if len(target_atom_neighbors) == 0:
+            raise ValueError(
+                "隣接原子が存在せず、bridgeまたはhollowの位置を決定できません。"
+            )
+
+        # ---bridgeの場合、1番目の隣接原子との中点を探す
+        if position == "bridge":
+            bridge_neighbor = target_atom_neighbors[0]
+            position_xy = (
+                target_atom_obj.position[:2] + bridge_neighbor.position[:2]
+            ) / 2
+            site_atom_indices = [target_atom_obj.index, bridge_neighbor.index]
+        else:
+            # ---hollowの場合、もう1つの原子を探す
+            # target_atomも隣接原子も、共通して隣接する原子を探す
+            # お互いの友だちだったら、そこは3人グループだよね、という考え方
+            for neighbor in target_atom_neighbors:
+                neighbor_neighbors = get_neighbors(
+                    substrate,
+                    neighbor,
+                    return_type="atoms",
+                )
+                # (表面上の隣接原子のみを残す: z_tolerance で判定)
+                neighbor_neighbor_indices = sorted(
+                    {
+                        atom.index
+                        for atom in neighbor_neighbors
+                        if abs(atom.position[2] - neighbor.position[2]) <= z_tolerance
+                    }
+                )
+                # 積集合を求める
+                common_neighbor_indices = sorted(
+                    set(atom.index for atom in target_atom_neighbors)
+                    & set(neighbor_neighbor_indices)
+                )
+                if len(common_neighbor_indices) > 0:
+                    common_neighbor_index = common_neighbor_indices[0]
+                    common_neighbor = substrate[common_neighbor_index]
+                    position_xy = (
+                        target_atom_obj.position[:2]
+                        + neighbor.position[:2]
+                        + common_neighbor.position[:2]
+                    ) / 3
+                    site_atom_indices = [
+                        target_atom_obj.index,
+                        neighbor.index,
+                        common_neighbor.index,
+                    ]
+                    break
+            else:
+                raise ValueError(
+                    "共通して隣接する原子が存在せず、hollowの位置を決定できません。"
+                )
+    else:
+        raise ValueError("position は 'top'、'bridge'、'hollow' を指定してください。")
+
+    # ---基板上面のz座標を計算（基板のみから）
+    z_top = max(atom.position[2] for atom in top_layer)
+    return {
+        "position": position,
+        "target_atom_index": int(target_atom_index),
+        "site_atom_indices": [int(idx) for idx in site_atom_indices],
+        "site_atom_elements": [substrate[idx].symbol for idx in site_atom_indices],
+        "site_position": (
+            float(position_xy[0]),
+            float(position_xy[1]),
+            float(z_top),
+        ),
+        "position_xy": (float(position_xy[0]), float(position_xy[1])),
+        "z_top": float(z_top),
+    }
+
+
+def place_adsorbate_at_surface_site(
+    substrate: Atoms,
+    adsorbate: Atoms,
+    *,
+    position_xy: Sequence[float],
+    site_z: float,
+    height: float,
+    site_atom_indices: Sequence[int],
+    rotation_deg: tuple[float, float, float] | None = None,
+    align_vector: Sequence[float] | None = None,
+    rotate_about: Literal["com", "cog"] = "com",
+    inplace: bool = False,
+    return_detail: bool = False,
+    extra_detail: Mapping[str, Any] | None = None,
+) -> Atoms | tuple[Atoms, dict[str, Any]]:
+    """指定済みの吸着サイト座標に、吸着分子を剛体配置する。
+
+    Args:
+        substrate (ase.Atoms): 基板となる原子構造。
+        adsorbate (ase.Atoms): 配置する吸着分子。
+        position_xy (Sequence[float]): 吸着分子の配置位置のxy座標。
+        site_z (float): 吸着分子の配置位置のz座標。
+        height (float): 吸着分子の高さ。
+        site_atom_indices (Sequence[int]): 吸着分子の配置位置の原子インデックス。
+        rotation_deg (tuple[float, float, float] | None): 吸着分子の回転角度。
+        align_vector (Sequence[float] | None): 吸着分子の整列方向ベクトル。
+        rotate_about (Literal["com", "cog"]): 回転の中心。
+        inplace (bool): もとの構造を置き換えるかどうか。
+        return_detail (bool): True の場合は吸着サイト座標、配置後重心、金属側に最も
+            近い（最下点の）吸着原子座標を detail 辞書として同時に返します。
+            False の場合は従来通り構造のみを返します。
+        extra_detail (Mapping[str, Any] | None): 追加の詳細情報。
+
+    Returns:
+        ase.Atoms | tuple[ase.Atoms, dict[str, Any]]:
+            return_detail=False の場合はベースと吸着分子を結合した構造。
+            True の場合は (構造, {"site_position": (x, y, z_top),
+            "com_position": (x, y, z_com),
+            "contact_atom_position": (x, y, z_contact)}) を返します。
+
+    """
+    # ---出力構造の準備
+    if inplace:
+        out = substrate
+    else:
+        out = substrate.copy()
+
+    # ---吸着分子を手動配置（高さ基準を基板のみに依存）
+    ads = adsorbate.copy()
+
+    # --- 回転処理の適用（配置前） ---
+    # 回転中心の決定
+    if rotate_about == "com":
+        rotation_center = ads.get_center_of_mass()
+    elif rotate_about == "cog":
+        rotation_center = ads.get_positions().mean(axis=0)
+    else:
+        raise ValueError(
+            f"rotate_aboutは 'com' または 'cog' を指定してください。指定値: {rotate_about}"
+        )
+
+    # 1. align_vector による整列回転
+    if align_vector is not None:
+        align_vec = np.array(align_vector, dtype=float)
+        if align_vec.shape != (3,):
+            raise ValueError(
+                f"align_vectorは3次元ベクトルを指定してください。現在の形状: {align_vec.shape}"
+            )
+        if np.allclose(align_vec, 0):
+            raise ValueError("align_vectorはゼロベクトルにできません。")
+
+        # align_vector を +z 軸に整列させる回転行列を計算
+        z_axis = np.array([0.0, 0.0, 1.0])
+        R_align = _compute_rotation_matrix(align_vec, z_axis)
+
+        # 回転中心を基準に回転を適用
+        for atom in ads:
+            rel_pos = atom.position - rotation_center
+            atom.position = (R_align @ rel_pos) + rotation_center
+
+        # 回転後の中心を再計算
+        if rotate_about == "com":
+            rotation_center = ads.get_center_of_mass()
+        else:
+            rotation_center = ads.get_positions().mean(axis=0)
+
+    # 2. rotation_deg によるオイラー角回転（XYZ順）
+    if rotation_deg is not None:
+        if len(rotation_deg) != 3:
+            raise ValueError(
+                f"rotation_degは3つの値 (rx, ry, rz) を指定してください。指定値: {rotation_deg}"
+            )
+
+        rx_deg, ry_deg, rz_deg = rotation_deg
+        rx_rad = np.deg2rad(rx_deg)
+        ry_rad = np.deg2rad(ry_deg)
+        rz_rad = np.deg2rad(rz_deg)
+
+        # X軸回りの回転行列
+        Rx = np.array(
+            [
+                [1, 0, 0],
+                [0, np.cos(rx_rad), -np.sin(rx_rad)],
+                [0, np.sin(rx_rad), np.cos(rx_rad)],
+            ]
+        )
+
+        # Y軸回りの回転行列
+        Ry = np.array(
+            [
+                [np.cos(ry_rad), 0, np.sin(ry_rad)],
+                [0, 1, 0],
+                [-np.sin(ry_rad), 0, np.cos(ry_rad)],
+            ]
+        )
+
+        # Z軸回りの回転行列
+        Rz = np.array(
+            [
+                [np.cos(rz_rad), -np.sin(rz_rad), 0],
+                [np.sin(rz_rad), np.cos(rz_rad), 0],
+                [0, 0, 1],
+            ]
+        )
+
+        # 合成回転行列（Z * Y * X の順）
+        R_euler = Rz @ Ry @ Rx
+
+        # 回転中心を基準に回転を適用
+        for atom in ads:
+            rel_pos = atom.position - rotation_center
+            atom.position = (R_euler @ rel_pos) + rotation_center
+
+    # XY位置合わせ: 吸着分子の重心XYを目標XY位置に移動
+    position_xy_array = np.asarray(position_xy, dtype=float)
+    com_xy = ads.get_center_of_mass()[:2]
+    ads.positions[:, :2] += position_xy_array - com_xy
+
+    # Z位置合わせ: 吸着分子の最下点が site_z + height になるように移動
+    z_min = ads.positions[:, 2].min()
+    ads.positions[:, 2] += float(site_z) + float(height) - z_min
+    contact_atom_index = int(np.argmin(ads.positions[:, 2]))
+    contact_atom_position = tuple(float(v) for v in ads.positions[contact_atom_index])
+
+    # ---構造を結合
+    out = out + ads
+
+    # ---基板マスクの拡張（存在する場合）
+    if "is_substrate" in substrate.arrays:
+        old_mask = substrate.arrays["is_substrate"].astype(bool)
+        new_mask = np.concatenate([old_mask, np.zeros(len(ads), dtype=bool)])
+        out.set_array("is_substrate", new_mask)
+
+    # ---返却する
+    if not return_detail:
+        return out
+
+    detail = dict(extra_detail or {})
+    detail.update(
+        {
+            "site_position": (
+                float(position_xy_array[0]),
+                float(position_xy_array[1]),
+                float(site_z),
+            ),
+            "com_position": tuple(float(v) for v in ads.get_center_of_mass()),
+            "contact_atom_position": contact_atom_position,
+            "site_atom_indices": [int(idx) for idx in site_atom_indices],
+            "site_atom_elements": [substrate[idx].symbol for idx in site_atom_indices],
+        }
+    )
+    return out, detail
+
+
 def place_adsorbate_on_surface(
     substrate: Atoms,
     adsorbate: Atoms,
@@ -1062,226 +1414,25 @@ def place_adsorbate_on_surface(
         - 回転は配置前に適用されます（整列回転 → オイラー角回転 → 位置決定）。
         - align_vectorとrotation_degは併用可能です。この場合、先にalign_vector整列、次にrotation_deg回転が適用されます。
     """
-    # ---(準備)target_atomを、Atom|Noneにする
-    if isinstance(target_atom, int):
-        target_atom_index: int = target_atom
-        target_atom: Atom | None = substrate[target_atom]
-    elif isinstance(target_atom, Atom):
-        target_atom_index: int = target_atom.index
-        target_atom: Atom | None = target_atom
-    elif target_atom is None:
-        target_atom: Atom | None = None
-        target_atom_index: int = None
-    else:
-        raise TypeError("target_atom は int または ase.Atom または None を指定してください。")
-
-    # ---表面原子を取得する（基板マスク適用）
-    layers: list[list[Atom]] = separate_layers(
+    site_detail = resolve_surface_site(
         substrate,
+        position,
+        target_atom=target_atom,
         z_tolerance=z_tolerance,
-        return_type="atoms",
+        allow_search_surface_atom=allow_search_surface_atom,
         use_substrate_mask=use_substrate_mask,
     )
-    top_layer: list[Atom] = layers[-1]
-    top_layer_indices: list[int] = [atom.index for atom in top_layer]
-
-    # ---target_atomを決定する
-    if target_atom is None:
-        # target_atomがNoneの場合、重心に最も近い原子を探す
-        target_atom = find_central_atom(top_layer)
-        target_atom_index = target_atom.index
-    elif target_atom_index not in top_layer_indices:  # 含まれるか判定は、インデックスで行う
-        # target_atomが表面に存在しない場合、target_atomのxyに近い表面原子を探す
-        if allow_search_surface_atom:
-            nearest_surface_atom = min(top_layer, key=lambda x: np.linalg.norm(
-                x.position[:2] - target_atom.position[:2]))
-            target_atom = nearest_surface_atom
-        else:
-            raise ValueError("指定された原子は表面に存在しません。")
-
-    target_atom: Atom = target_atom  # ここまでで、target_atomはAtomオブジェクトになっている
-
-    # ---positionから、xy座標を取得する
-    site_atom_indices: list[int] = []
-
-    if position == "top":
-        position_xy = target_atom.position[:2]
-        site_atom_indices = [target_atom.index]
-    elif position in ["bridge", "hollow"]:
-        # 表面上で、target_atomの隣接原子を探す
-        target_atom_neighbors = get_neighbors(substrate,
-                                              target_atom,
-                                              return_type="atoms")
-        # 表面上の隣接原子のみを残す（z_tolerance で判定）
-        target_atom_neighbors = [
-            n
-            for n in target_atom_neighbors
-            if abs(n.position[2] - target_atom.position[2]) <= z_tolerance
-        ]
-        if len(target_atom_neighbors) == 0:
-            raise ValueError("隣接原子が存在せず、bridgeまたはhollowの位置を決定できません。")
-        # ---bridgeの場合、1番目の隣接原子との中点を探す
-        if position == "bridge":
-            bridge_neighbor = target_atom_neighbors[0]
-            position_xy = (target_atom.position[:2] +
-                           bridge_neighbor.position[:2]) / 2
-            site_atom_indices = [target_atom.index, bridge_neighbor.index]
-        elif position == "hollow":
-            # ---hollowの場合、もう1つの原子を探す
-            # target_atomも隣接原子も、共通して隣接する原子を探す
-            # お互いの友だちだったら、そこは3人グループだよね、という考え方
-            for neighbor in target_atom_neighbors:
-                neighbor_neighbors = get_neighbors(substrate,
-                                                   neighbor,
-                                                   return_type="atoms")
-                # (表面上の隣接原子のみを残す: z_tolerance で判定)
-                neighbor_neighbors = [
-                    n
-                    for n in neighbor_neighbors
-                    if abs(n.position[2] - neighbor.position[2]) <= z_tolerance
-                ]
-                # 積集合を求める
-                common_neighbor_indices = set([a.index for a in target_atom_neighbors]) & \
-                    set([a.index for a in neighbor_neighbors])
-
-                if len(common_neighbor_indices) > 0:
-                    common_neighbor_index = list(common_neighbor_indices)[0]
-                    common_neighbor = substrate[common_neighbor_index]
-                    position_xy = (target_atom.position[:2] +
-                                   neighbor.position[:2] +
-                                   common_neighbor.position[:2]) / 3
-                    site_atom_indices = [
-                        target_atom.index,
-                        neighbor.index,
-                        common_neighbor.index,
-                    ]
-                    break
-            else:
-                raise ValueError("共通して隣接する原子が存在せず、hollowの位置を決定できません。")
-    else:
-        raise ValueError("position は 'top'、'bridge'、'hollow' を指定してください。")
-
-    # ---基板上面のz座標を計算（基板のみから）
-    z_top = max(a.position[2] for a in top_layer)
-
-    # ---出力構造の準備
-    if inplace:
-        out = substrate
-    else:
-        out = substrate.copy()
-
-    # ---吸着分子を手動配置（高さ基準を基板のみに依存）
-    ads = adsorbate.copy()
-    
-    # --- 回転処理の適用（配置前） ---
-    # 回転中心の決定
-    if rotate_about == "com":
-        rotation_center = ads.get_center_of_mass()
-    elif rotate_about == "cog":
-        rotation_center = ads.get_positions().mean(axis=0)
-    else:
-        raise ValueError(f"rotate_aboutは 'com' または 'cog' を指定してください。指定値: {rotate_about}")
-    
-    # 1. align_vector による整列回転
-    if align_vector is not None:
-        align_vec = np.array(align_vector, dtype=float)
-        if align_vec.shape != (3,):
-            raise ValueError(f"align_vectorは3次元ベクトルを指定してください。現在の形状: {align_vec.shape}")
-        if np.allclose(align_vec, 0):
-            raise ValueError("align_vectorはゼロベクトルにできません。")
-        
-        # align_vector を +z 軸に整列させる回転行列を計算
-        z_axis = np.array([0.0, 0.0, 1.0])
-        R_align = _compute_rotation_matrix(align_vec, z_axis)
-        
-        # 回転中心を基準に回転を適用
-        for atom in ads:
-            rel_pos = atom.position - rotation_center
-            rotated_pos = R_align @ rel_pos
-            atom.position = rotated_pos + rotation_center
-        
-        # 回転後の中心を再計算
-        if rotate_about == "com":
-            rotation_center = ads.get_center_of_mass()
-        else:
-            rotation_center = ads.get_positions().mean(axis=0)
-    
-    # 2. rotation_deg によるオイラー角回転（XYZ順）
-    if rotation_deg is not None:
-        if len(rotation_deg) != 3:
-            raise ValueError(f"rotation_degは3つの値 (rx, ry, rz) を指定してください。指定値: {rotation_deg}")
-        
-        rx_deg, ry_deg, rz_deg = rotation_deg
-        rx_rad = np.deg2rad(rx_deg)
-        ry_rad = np.deg2rad(ry_deg)
-        rz_rad = np.deg2rad(rz_deg)
-        
-        # X軸回りの回転行列
-        Rx = np.array([
-            [1, 0, 0],
-            [0, np.cos(rx_rad), -np.sin(rx_rad)],
-            [0, np.sin(rx_rad), np.cos(rx_rad)]
-        ])
-        
-        # Y軸回りの回転行列
-        Ry = np.array([
-            [np.cos(ry_rad), 0, np.sin(ry_rad)],
-            [0, 1, 0],
-            [-np.sin(ry_rad), 0, np.cos(ry_rad)]
-        ])
-        
-        # Z軸回りの回転行列
-        Rz = np.array([
-            [np.cos(rz_rad), -np.sin(rz_rad), 0],
-            [np.sin(rz_rad), np.cos(rz_rad), 0],
-            [0, 0, 1]
-        ])
-        
-        # 合成回転行列（Z * Y * X の順）
-        R_euler = Rz @ Ry @ Rx
-        
-        # 回転中心を基準に回転を適用
-        for atom in ads:
-            rel_pos = atom.position - rotation_center
-            rotated_pos = R_euler @ rel_pos
-            atom.position = rotated_pos + rotation_center
-    
-    # XY位置合わせ: 吸着分子の重心XYを目標XY位置に移動
-    com_xy = ads.get_center_of_mass()[:2]
-    shift_xy = position_xy - com_xy
-    ads.positions[:, :2] += shift_xy
-    
-    # Z位置合わせ: 吸着分子の最下点が z_top + height になるように移動
-    z_min = ads.positions[:, 2].min()
-    ads.positions[:, 2] += (z_top + height - z_min)
-    contact_atom_index = int(np.argmin(ads.positions[:, 2]))
-    contact_atom_position = tuple(float(v) for v in ads.positions[contact_atom_index])
-
-    # ---構造を結合
-    out = out + ads
-
-    # ---基板マスクの拡張（存在する場合）
-    if "is_substrate" in substrate.arrays:
-        old_mask = substrate.arrays["is_substrate"].astype(bool)
-        new_mask = np.concatenate([old_mask, np.zeros(len(ads), dtype=bool)])
-        out.set_array("is_substrate", new_mask)
-
-    # ---返却する
-    if return_detail:
-        site_position = (
-            float(position_xy[0]),
-            float(position_xy[1]),
-            float(z_top),
-        )
-        com_position = tuple(float(v) for v in ads.get_center_of_mass())
-        detail = {
-            "site_position": site_position,
-            "com_position": com_position,
-            "contact_atom_position": contact_atom_position,
-            "site_atom_indices": site_atom_indices,
-            "site_atom_elements": [
-                substrate[idx].symbol for idx in site_atom_indices
-            ],
-        }
-        return out, detail
-    return out
+    return place_adsorbate_at_surface_site(
+        substrate,
+        adsorbate,
+        position_xy=site_detail["position_xy"],
+        site_z=float(site_detail["z_top"]),
+        height=float(height),
+        site_atom_indices=site_detail["site_atom_indices"],
+        rotation_deg=rotation_deg,
+        align_vector=align_vector,
+        rotate_about=rotate_about,
+        inplace=inplace,
+        return_detail=return_detail,
+        extra_detail=site_detail,
+    )
