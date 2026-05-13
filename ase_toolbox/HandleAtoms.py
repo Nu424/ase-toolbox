@@ -13,7 +13,7 @@ ASEのAtomsオブジェクトを操作・処理するための関数をまとめ
 - place_adsorbate_on_surface(): (表面用)表面にくっつける
 """
 
-from typing import Literal, Sequence, Mapping, Optional
+from typing import Literal, Sequence, Mapping, Optional, Any
 from ase import Atoms, Atom
 from ase.constraints import FixAtoms
 import numpy as np
