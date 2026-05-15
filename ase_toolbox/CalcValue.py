@@ -13,28 +13,42 @@ from ase import Atoms, Atom
 from ase.neighborlist import NeighborList, natural_cutoffs
 
 
-def _validate_step(step: float, *, tol: float = 1e-12) -> int:
+def _validate_step(
+    step: float,
+    *,
+    max_total: float = 1.0,
+    tol: float = 1e-12,
+) -> tuple[int, float, float]:
     """
-    刻み幅 step を検証し、シンプレックス格子の分割数を返す。
+    刻み幅 step と最大合計値 max_total を検証し、分割数と正規化値を返す。
     """
     try:
         step_value = float(step)
     except (TypeError, ValueError):
         raise TypeError("step は float と互換性のある数値を指定してください。") from None
 
-    if not (0.0 < step_value <= 1.0):
-        raise ValueError("step は 0 より大きく 1 以下の値を指定してください。")
+    try:
+        max_total_value = float(max_total)
+    except (TypeError, ValueError):
+        raise TypeError("max_total は float と互換性のある数値を指定してください。") from None
 
-    total_units = int(round(1.0 / step_value))
+    if not (0.0 < max_total_value <= 1.0):
+        raise ValueError("max_total は 0 より大きく 1 以下の値を指定してください。")
+    if not (0.0 < step_value <= max_total_value):
+        raise ValueError("step は 0 より大きく max_total 以下の値を指定してください。")
+
+    total_units = int(round(max_total_value / step_value))
     if total_units <= 0:
         raise ValueError("step から算出される分割数が不正です。別の刻み幅を指定してください。")
 
-    if abs(1.0 - total_units * step_value) > tol:
+    if abs(max_total_value - total_units * step_value) > tol:
         raise ValueError(
-            "step は 1 を分割できる値のみ指定できます。例: 0.5, 0.25, 0.1 など。"
+            "step は max_total を分割できる値のみ指定できます。"
+            "例: max_total=1.0 なら 0.5, 0.25, 0.1、"
+            "max_total=0.15 なら 0.05 など。"
         )
 
-    return total_units
+    return total_units, step_value, max_total_value
 
 
 def _normalize_elements(elements: Sequence[str]) -> list[str]:
@@ -110,6 +124,8 @@ def _counts_to_composition(
     elements: Sequence[str],
     counts: Sequence[int],
     total_units: int,
+    step: float,
+    max_total: float,
     rounding_decimals: int | None,
 ) -> dict[str, float]:
     """
@@ -119,6 +135,8 @@ def _counts_to_composition(
         elements (Sequence[str]): 元素のリスト。
         counts (Sequence[int]): 各元素の個数。_iter_simplex_counts() で生成されたリスト。
         total_units (int): 合計値。
+        step (float): 刻み幅。
+        max_total (float): 組成比の合計値。
         rounding_decimals (int | None): 戻り値を丸める小数点以下桁数。
 
     Returns:
@@ -130,7 +148,7 @@ def _counts_to_composition(
     if total_units <= 0:
         raise ValueError("total_units は正の整数である必要があります。")
 
-    fractions = [count / total_units for count in counts]
+    fractions = [count * step for count in counts] # countは星の数。unitsの値まで取りうるので、step * 星数で、max_totalになりうる
 
     if rounding_decimals is None:
         return {sym: frac for sym, frac in zip(elements, fractions)} # sym: symbol(元素記号)
@@ -138,9 +156,9 @@ def _counts_to_composition(
     rounded = [round(frac, rounding_decimals) for frac in fractions]
     if len(rounded) >= 2:
         partial_sum = sum(rounded[:-1])
-        rounded[-1] = round(1.0 - partial_sum, rounding_decimals)
+        rounded[-1] = round(max_total - partial_sum, rounding_decimals)
     else:
-        rounded[0] = round(1.0, rounding_decimals)
+        rounded[0] = round(max_total, rounding_decimals)
 
     return {sym: val for sym, val in zip(elements, rounded)}
 
@@ -149,14 +167,17 @@ def iter_simplex_compositions(
     elements: Sequence[str],
     step: float,
     *,
+    max_total: float = 1.0,
     rounding_decimals: int | None = None,
 ) -> Iterator[dict[str, float]]:
     """
-    シンプレックス格子点上の組成（合計1）を逐次的に生成する。
+    シンプレックス格子点上の組成（合計 max_total）を逐次的に生成する。
 
     Args:
         elements (Sequence[str]): 構成元素のリスト。重複は不可。
-        step (float): 刻み幅。1/step が整数（許容誤差内）となる値を指定する。
+        step (float): 刻み幅。max_total/step が整数（許容誤差内）となる値を指定する。
+        max_total (float, optional): 組成比の合計値。0 より大きく 1 以下。
+            デフォルトは 1.0。
         rounding_decimals (int | None, optional): 戻り値を丸める小数点以下桁数。
             None の場合は丸めずに返す。デフォルトは None。
 
@@ -165,7 +186,7 @@ def iter_simplex_compositions(
 
     Raises:
         TypeError: elements に str 以外が含まれる場合、または rounding_decimals の型が不正な場合。
-        ValueError: elements が空、重複を含む、step が条件を満たさない場合。
+        ValueError: elements が空、重複を含む、step や max_total が条件を満たさない場合。
 
     Examples:
         >>> gen = iter_simplex_compositions(["Cu", "Au"], 0.5)
@@ -173,6 +194,8 @@ def iter_simplex_compositions(
         {'Cu': 0.0, 'Au': 1.0}
         >>> next(gen)
         {'Cu': 0.5, 'Au': 0.5}
+        >>> enumerate_simplex_compositions(["Cu", "Au"], 0.05, max_total=0.15, rounding_decimals=2)
+        [{'Cu': 0.0, 'Au': 0.15}, {'Cu': 0.05, 'Au': 0.1}, {'Cu': 0.1, 'Au': 0.05}, {'Cu': 0.15, 'Au': 0.0}]
 
     Note:
         - 戻り値の辞書は `HandleAtoms.substitute_elements()` の new 引数に直接渡せる。
@@ -180,16 +203,21 @@ def iter_simplex_compositions(
     """
     normalized = _normalize_elements(elements)
     rounding = _validate_rounding_decimals(rounding_decimals)
-    total_units = _validate_step(step)
+    total_units, step_value, max_total_value = _validate_step(
+        step, max_total=max_total
+    )
 
     for counts in _iter_simplex_counts(len(normalized), total_units):
-        yield _counts_to_composition(normalized, counts, total_units, rounding)
+        yield _counts_to_composition(
+            normalized, counts, total_units, step_value, max_total_value, rounding
+        )
 
 
 def enumerate_simplex_compositions(
     elements: Sequence[str],
     step: float,
     *,
+    max_total: float = 1.0,
     rounding_decimals: int | None = None,
 ) -> list[dict[str, float]]:
     """
@@ -197,7 +225,9 @@ def enumerate_simplex_compositions(
 
     Args:
         elements (Sequence[str]): 構成元素のリスト。順序は出力にも反映される。
-        step (float): 刻み幅。1/step が整数（許容誤差内）となる値を指定する。
+        step (float): 刻み幅。max_total/step が整数（許容誤差内）となる値を指定する。
+        max_total (float, optional): 組成比の合計値。0 より大きく 1 以下。
+            デフォルトは 1.0。
         rounding_decimals (int | None, optional): 組成比を丸める桁数。None なら丸めない。
 
     Returns:
@@ -205,7 +235,7 @@ def enumerate_simplex_compositions(
 
     Raises:
         TypeError: elements に str 以外が含まれる場合、または rounding_decimals の型が不正な場合。
-        ValueError: elements が空、重複を含む、step が条件を満たさない場合。
+        ValueError: elements が空、重複を含む、step や max_total が条件を満たさない場合。
 
     Examples:
         >>> enumerate_simplex_compositions(["Cu", "Au"], 0.5)
@@ -213,36 +243,46 @@ def enumerate_simplex_compositions(
     """
     return list(
         iter_simplex_compositions(
-            elements, step, rounding_decimals=rounding_decimals
+            elements,
+            step,
+            max_total=max_total,
+            rounding_decimals=rounding_decimals,
         )
     )
 
 
-def count_simplex_compositions(num_elements: int, step: float) -> int:
+def count_simplex_compositions(
+    num_elements: int,
+    step: float,
+    *,
+    max_total: float = 1.0,
+) -> int:
     """
     刻み幅と元素数から、列挙される組成の総数を計算する。
 
     Args:
         num_elements (int): 元素の数。1 以上の整数を指定。
-        step (float): 刻み幅。1/step が整数（許容誤差内）となる値を指定する。
+        step (float): 刻み幅。max_total/step が整数（許容誤差内）となる値を指定する。
+        max_total (float, optional): 組成比の合計値。0 より大きく 1 以下。
+            デフォルトは 1.0。
 
     Returns:
         int: 対応する組成の総数。
 
     Raises:
         TypeError: num_elements が int ではない場合。
-        ValueError: num_elements が 1 未満、または step が条件を満たさない場合。
+        ValueError: num_elements が 1 未満、または step や max_total が条件を満たさない場合。
 
     Examples:
         >>> count_simplex_compositions(3, 0.25)
-        20
+        15
     """
     if not isinstance(num_elements, int):
         raise TypeError("num_elements には int を指定してください。")
     if num_elements <= 0:
         raise ValueError("num_elements は 1 以上の整数を指定してください。")
 
-    total_units = _validate_step(step)
+    total_units, _, _ = _validate_step(step, max_total=max_total)
     return math.comb(total_units + num_elements - 1, num_elements - 1)
 
 
