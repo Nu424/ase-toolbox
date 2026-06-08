@@ -364,6 +364,38 @@ ASEを使った化学シミュレーションをサクッと進めるための�
   - 🔧 主な引数: `atoms (ase.Atoms)`, `calculator (Calculator|None)`, `optimizer_cls`, `opt_fmax`, `opt_maxsteps`, `copy_atoms`。
   - ↩️ 戻り値: `LatticeConstant`（a,b,c,α,β,γ）。
 
+### Cache.py（計算結果キャッシュ）
+- **stable_key(obj) / atoms_fingerprint(atoms) / KeyBuilder**
+  - 🧩 何をする: 計算条件や `ase.Atoms` を、再利用しやすい安定したキーへ変換します。
+  - 📝 メモ: `calculator` オブジェクト本体はキーに含めず、`{"name": "PFP", "calc_mode": "CRYSTAL_U0"}` のような意味的な設定を明示して含めてください。
+- **CacheStore(base_dir, namespace, store)**
+  - 🧩 何をする: キーに対して計算結果を保存・取得し、`get_or_compute()` で未保存時だけ計算できます。
+  - 🔧 保存形式: `JsonValueStore`（float/dict/listなど）、`AtomsStore`（構造）、`PathStore`（成果物パス）。
+  - ↩️ 主なメソッド: `exists()`, `get()`, `set()`, `get_or_compute()`, `invalidate()`, `clear()`。
+
+  ```python
+  from ase_toolbox.Cache import CacheStore, JsonValueStore, atoms_fingerprint, stable_key
+  from ase_toolbox.Calculation import calculate_formation_energy
+
+  energy_cache = CacheStore(
+      base_dir=".cache/ase_toolbox",
+      namespace="formation_energy",
+      store=JsonValueStore(),
+  )
+
+  key = stable_key({
+      "task": "formation_energy",
+      "structure": atoms_fingerprint(compound),
+      "calculator": {"name": "PFP", "calc_mode": "CRYSTAL_U0"},
+      "opt": {"fmax": 0.05, "maxsteps": 3000},
+  })
+
+  energy = energy_cache.get_or_compute(
+      key,
+      lambda: calculate_formation_energy(calc, compound),
+  )
+  ```
+
 ### util.py（ユーティリティ）
 - **ConditionalLogger / ensure_logger / setup_logger**
   - 🧩 何をする: ログ出力を簡単にON/OFFしつつ、ファイル/コンソールへ整形出力。
